@@ -18,6 +18,12 @@ O reconhecimento usa CUDA; CPU, macOS e Windows ainda não são suportados pelo 
 Whisper e separação de falantes rodam localmente. Resumos e criação de issues usam o Claude Code
 (opcional) e podem enviar a transcrição para esse serviço e os campos aprovados para o MCP.
 
+## Releases
+
+As versões são publicadas na [página de releases](https://github.com/vateiixeira/tars/releases).
+O pacote Linux x86_64 inclui o app compilado e o backend Python, acompanhado de checksum SHA-256.
+Veja [como instalar o pacote](docs/INSTALL_RELEASE.md) e o [fluxo para publicar versões](docs/RELEASING.md).
+
 ## Instalação a partir do código
 
 Pré-requisitos: Python 3.12+, [uv](https://docs.astral.sh/uv/getting-started/installation/),
