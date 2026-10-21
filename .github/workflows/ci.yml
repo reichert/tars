@@ -1,0 +1,50 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  backend:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependências de teste
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg libespeak-ng1
+      - uses: astral-sh/setup-uv@v9
+        with:
+          version: "0.11.29"
+      - run: uv python install 3.12
+      - run: uv sync --frozen --group dev --python 3.12
+      - run: uv run --frozen pytest -q
+  desktop:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - name: Dependências do Tauri
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev build-essential libxdo-dev libssl-dev
+          librsvg2-dev libayatana-appindicator3-dev
+      - run: rustup update stable --no-self-update && rustup default stable
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - run: pnpm test
+        working-directory: app
+      - run: pnpm build
+        working-directory: app
+      - run: cargo test --locked --lib
+        working-directory: app/src-tauri
