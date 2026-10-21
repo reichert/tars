@@ -4,6 +4,7 @@ on:
     branches: [main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
 permissions:
   contents: read
 concurrency:
@@ -20,6 +21,7 @@ jobs:
       - uses: astral-sh/setup-uv@94527f2e458b27549849d47d273a16bec83a01e9 # v7
         with:
           version: "0.11.29"
+      - run: python3 scripts/release.py check
       - run: uv python install 3.12
       - run: uv sync --frozen --group dev --python 3.12
       - run: uv run --frozen pytest -q
