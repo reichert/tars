@@ -1,0 +1,24 @@
+[Unit]
+Description=Backend do whisper-ditado (ditado por voz, reuniões e API local)
+After=graphical-session.target ydotool.service
+Wants=ydotool.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart="@PROJECT_ROOT@/run-backend.sh"
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# SIGTERM só para o Python: ele encerra a gravação e espera a finalização (ffmpeg incluso).
+# Com o padrão (control-group) o ffmpeg da finalização morreria junto e a reunião viraria `failed`.
+# O que sobrar depois que o processo principal sair recebe SIGKILL.
+KillMode=mixed
+# Ajustes opcionais (veja README.md). Depois de mudar:
+#   systemctl --user daemon-reload && systemctl --user restart whisper-ditado-backend
+#Environment=DITADO_KEY=ctrl+super
+#Environment=DITADO_LANG=pt
+#Environment=DITADO_MODEL=large-v3-turbo
+#Environment=DITADO_PASTE=shift+insert
+
+[Install]
+WantedBy=graphical-session.target

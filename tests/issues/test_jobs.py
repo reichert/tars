@@ -1,0 +1,580 @@
+import threading
+from datetime import datetime
+
+import pytest
+
+from whisper_ditado.issues import jobs as jobs_mod
+from whisper_ditado.issues.jobs import JobBusy, PostMeetingJobs
+from whisper_ditado.issues.client import CreateOutcome, IssueError, IssueOptions, Option
+from whisper_ditado.issues.scan import ScanItem
+from whisper_ditado.claude_cli import ClaudeError
+from whisper_ditado.settings import Settings
+from whisper_ditado.store import Segment, Store
+
+T0 = datetime(2026, 10, 20, 10, 0, 0)
+
+OPTS = IssueOptions(
+    "vi",
+    people=[Option(9, "Miguel")],
+    teams=[Option(3, "Desenvolvimento")],
+    products=[Option(4, "e-commerce")],
+    stages=[Option(1, "Backlog"), Option(2, "To Do")],
+    fetched_at=T0,
+)
+
+
+class FakeBus:
+    def __init__(self):
+        self.events = []
+        self._lock = threading.Lock()
+
+    def publish(self, event):
+        with self._lock:
+            self.events.append(dict(event))
+
+
+class FakeClaude:
+    def __init__(self):
+        self.bin_path = None
+        self.model = None
+        self.effort = None
+        self.summarize_calls = []
+        self.summary = "RESUMO"
+        self.error = None
+
+    def summarize(self, transcript, prompt):
+        self.summarize_calls.append((transcript, prompt, self.bin_path, self.model, self.effort))
+        if self.error is not None:
+            raise self.error
+        return self.summary
+
+
+class FakeOptions:
+    def __init__(self, options=OPTS, error=None):
+        self.options, self.error, self.calls = options, error, 0
+
+    def get(self, refresh=False):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.options
+
+    def peek(self):
+        return self.options
+
+
+class FakeIssue:
+    def __init__(self):
+        self.outcomes = []
+        self.sent = []
+
+    def create_issue(self, fields):
+        self.sent.append(fields)
+        out = self.outcomes.pop(0)
+        if isinstance(out, Exception):
+            raise out
+        return out
+
+
+def scan_item(title="Fazer X", **kw):
+    base = dict(kind="tarefa", title=title, description="d", project=None, product_id=4, assignee_id=9,
+                assignee_hint="Miguel", team_id=3, team_hint=None, priority="medium", evidence=[],
+                repeats_number=None)
+    base.update(kw)
+    return ScanItem(**base)
+
+
+@pytest.fixture
+def store(tmp_path):
+    s = Store(tmp_path / "t.db")
+    yield s
+    s.close()
+
+
+@pytest.fixture
+def settings(store, tmp_path):
+    s = Settings(store)
+    s.update({"issues_root": str(tmp_path)})
+    return s
+
+
+@pytest.fixture
+def mid(store):
+    m = store.create_meeting(T0)
+    store.update_meeting(m.id, status="ready")
+    store.replace_transcript(m.id, [], [Segment(id=None, meeting_id=m.id, speaker_id=None, source="mic",
+                                                start_s=1.0, end_s=4.0, text="vamos fazer X")])
+    return m.id
+
+
+class Rig:
+    def __init__(self, store, settings, monkeypatch):
+        self.store, self.settings = store, settings
+        self.bus, self.claude, self.tasks_claude = FakeBus(), FakeClaude(), FakeClaude()
+        self.options, self.issues_client = FakeOptions(), FakeIssue()
+        self.scans = []
+        self.scan_result = [scan_item()]
+        self.scan_error = None
+        self.on_scan = None
+        monkeypatch.setattr(jobs_mod, "run_scan", self._run_scan)
+        self.jobs = PostMeetingJobs(store, settings, self.bus, self.claude, self.issues_client, self.options,
+                                self.tasks_claude)
+
+    def _run_scan(self, cli, root, rules, transcript, summary, options, existing, segments):
+        self.scans.append({"cli": cli, "root": root, "rules": rules, "transcript": transcript,
+                           "summary": summary, "options": options, "existing": existing,
+                           "bin": cli.bin_path, "model": cli.model, "effort": cli.effort})
+        if self.on_scan is not None:
+            self.on_scan()
+        if self.scan_error is not None:
+            raise self.scan_error
+        return self.scan_result
+
+    def wait_idle(self):
+        for worker in (self.jobs._claude_worker, self.jobs._create_worker):
+            worker.submit(lambda: None, gated=False).result(10)
+
+    def ready(self, mid):
+        self.jobs.on_ready(mid)
+        self.wait_idle()
+
+    def events(self, kind=None):
+        return [e for e in self.bus.events if kind is None or e["type"] == kind]
+
+
+@pytest.fixture
+def rig(store, settings, monkeypatch):
+    r = Rig(store, settings, monkeypatch)
+    yield r
+    r.jobs.shutdown()
+
+
+def job_event(mid, kind, state):
+    return {"type": "meeting_job", "meeting_id": mid, "kind": kind, "state": state}
+
+
+# -- resumo --------------------------------------------------------------------
+
+
+def test_on_ready_summarizes_when_enabled_and_missing(rig, store, mid):
+    rig.ready(mid)
+    assert store.get_summary(mid) == "RESUMO"
+    assert store.get_job(mid, "summary").state == "done"
+    assert [e for e in rig.events("meeting_job") if e["kind"] == "summary"] == [
+        job_event(mid, "summary", "running"), job_event(mid, "summary", "done")]
+    transcript, prompt, _, _, _ = rig.claude.summarize_calls[0]
+    assert "vamos fazer X" in transcript and prompt == rig.settings.get("summary_prompt")
+
+
+def test_on_ready_only_enqueues(rig, store, mid):
+    release = threading.Event()
+    rig.claude.summarize = lambda t, p: release.wait(10) and "R"
+    rig.jobs.on_ready(mid)  # volta já, mesmo com o Claude preso
+    assert store.get_summary(mid) is None
+    release.set()
+    rig.wait_idle()
+    assert store.get_summary(mid) == "R"
+
+
+def test_on_ready_skips_summary_if_disabled_or_present(rig, store, settings, mid):
+    settings.update({"auto_summary": False})
+    rig.ready(mid)
+    assert rig.claude.summarize_calls == [] and store.get_job(mid, "summary") is None
+
+    settings.update({"auto_summary": True})
+    store.set_summary(mid, "JÁ TEM")
+    rig.ready(mid)
+    assert rig.claude.summarize_calls == [] and store.get_summary(mid) == "JÁ TEM"
+
+
+def test_on_ready_without_segments_does_nothing(rig, store, settings):
+    empty = store.create_meeting(T0).id
+    store.update_meeting(empty, status="ready")
+    settings.update({"issues_enabled": True})
+    rig.ready(empty)
+    assert rig.bus.events == [] and rig.claude.summarize_calls == []
+    assert store.get_job(empty, "summary") is None and store.get_job(empty, "tasks") is None
+
+
+def test_summary_failure_is_recorded_not_fatal(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.claude.error = ClaudeError("x")
+    rig.ready(mid)
+    job = store.get_job(mid, "summary")
+    assert (job.state, job.error) == ("error", "x")
+    assert store.get_summary(mid) is None
+    assert store.get_meeting(mid).status == "ready"
+    assert job_event(mid, "summary", "error") in rig.bus.events
+    # o levantamento ainda roda, sem resumo
+    assert len(rig.scans) == 1 and rig.scans[0]["summary"] is None
+    assert store.get_job(mid, "tasks").state == "done"
+
+
+def test_summary_unexpected_exception_is_recorded(rig, store, mid):
+    rig.claude.error = RuntimeError("bug")
+    rig.ready(mid)
+    job = store.get_job(mid, "summary")
+    assert job.state == "error" and job.error
+    assert "bug" not in job.error
+
+
+def test_empty_summary_is_an_error(rig, store, mid):
+    rig.claude.summary = "  "
+    rig.ready(mid)
+    assert store.get_summary(mid) is None and store.get_job(mid, "summary").state == "error"
+
+
+# -- levantamento --------------------------------------------------------------
+
+
+def test_on_ready_scans_only_with_flow_enabled_and_valid_root(rig, store, settings, tmp_path, mid):
+    rig.ready(mid)  # desligado (padrão)
+    assert store.get_job(mid, "tasks") is None and rig.scans == []
+
+    settings.update({"issues_enabled": True})
+    settings.store.set_setting("issues_root", str(tmp_path / "sumiu"))  # a pasta sumiu depois de validada
+    rig.ready(mid)
+    job = store.get_job(mid, "tasks")
+    assert (job.state, job.error) == ("error", f"Pasta raiz não encontrada: {tmp_path / 'sumiu'}")
+    assert rig.scans == [] and rig.options.calls == 0
+    assert job_event(mid, "tasks", "error") in rig.bus.events
+
+
+def test_scan_saves_items_with_default_stage(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.scan_result = [scan_item("A"), scan_item("B")]
+    rig.ready(mid)
+    tasks = store.list_tasks(mid)
+    assert [(t.title, t.stage_id, t.assignee_id) for t in tasks] == [("A", 2, 9), ("B", 2, 9)]
+    assert store.get_job(mid, "tasks").state == "done"
+    assert [e for e in rig.events("meeting_job") if e["kind"] == "tasks"] == [
+        job_event(mid, "tasks", "running"), job_event(mid, "tasks", "done")]
+    assert rig.events("tasks_changed") == [{"type": "tasks_changed", "meeting_id": mid}]
+    call = rig.scans[0]
+    assert call["summary"] == "RESUMO" and call["options"] is OPTS
+    assert str(call["root"]) == settings.get("issues_root")
+    assert call["rules"] == settings.get("tasks_prompt")
+    assert "vamos fazer X" in call["transcript"] and call["existing"] == []
+
+
+def test_scan_runs_without_options_when_issues_client_fails(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.options.error = IssueError("sem login")
+    rig.scan_result = [scan_item("A", product_id=None, assignee_id=None, team_id=None)]
+    rig.ready(mid)
+    assert rig.scans[0]["options"] is None
+    [task] = store.list_tasks(mid)
+    assert (task.stage_id, task.assignee_id, task.team_id, task.product_id) == (None,) * 4
+    assert store.get_job(mid, "tasks").state == "done"
+
+
+def test_scan_without_to_do_stage_leaves_stage_empty(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.options.options = IssueOptions("vi", [], [], [], [Option(1, "Backlog")], T0)
+    rig.ready(mid)
+    assert [t.stage_id for t in store.list_tasks(mid)] == [None]
+
+
+def test_scan_error_is_recorded(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.scan_error = ClaudeError("O levantamento demorou demais (10 min)")
+    rig.ready(mid)
+    job = store.get_job(mid, "tasks")
+    assert (job.state, job.error) == ("error", "O levantamento demorou demais (10 min)")
+    assert rig.events("tasks_changed") == []
+    assert job_event(mid, "tasks", "error") in rig.bus.events
+
+
+def test_scan_unexpected_exception_is_recorded(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.scan_error = RuntimeError("bug")
+    rig.ready(mid)
+    job = store.get_job(mid, "tasks")
+    assert job.state == "error" and job.error and "bug" not in job.error
+
+
+def test_scan_syncs_claude_settings_before_fetching_options(rig, store, settings, mid):
+    settings.update({"issues_enabled": True, "auto_summary": False,
+                     "claude_bin": "/x/claude", "claude_model": "sonnet", "tasks_model": "opus",
+                     "tasks_effort": "high"})
+    seen = []
+    rig.options.get = lambda refresh=False: seen.append(
+        (rig.tasks_claude.bin_path, rig.tasks_claude.model, rig.tasks_claude.effort)) or OPTS
+    rig.ready(mid)
+    assert seen == [("/x/claude", "opus", "high")]
+
+
+def test_store_error_inside_scan_except_still_finishes_the_job(rig, store, settings, mid, monkeypatch):
+    settings.update({"issues_enabled": True})
+    rig.scan_error = RuntimeError("bug")
+    monkeypatch.setattr(store, "get_meeting", lambda _id: (_ for _ in ()).throw(RuntimeError("banco")))
+    rig.ready(mid)
+    job = store.get_job(mid, "tasks")
+    assert job.state == "error" and job.error
+    assert job_event(mid, "tasks", "error") in rig.bus.events
+
+
+def test_store_error_inside_summary_except_still_finishes_the_job(rig, store, mid, monkeypatch):
+    rig.claude.error = RuntimeError("bug")
+    monkeypatch.setattr(store, "get_meeting", lambda _id: (_ for _ in ()).throw(RuntimeError("banco")))
+    rig.ready(mid)
+    job = store.get_job(mid, "summary")
+    assert job.state == "error" and job.error
+    assert job_event(mid, "summary", "error") in rig.bus.events
+
+
+def test_scan_passes_existing_tasks(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    old = store.add_task(mid, {"title": "Antiga"}, origin="manual")
+    rig.ready(mid)
+    assert [t.id for t in rig.scans[0]["existing"]] == [old.id]
+
+
+def test_on_ready_is_idempotent(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    store.set_job(mid, "tasks", "error", "Interrompido: o serviço reiniciou")
+    rig.ready(mid)
+    assert rig.scans == []
+    assert store.get_job(mid, "tasks").state == "error"
+    rig.ready(mid)
+    assert rig.scans == []
+
+
+def test_rescan_validation_order(rig, store, settings, tmp_path, mid):
+    with pytest.raises(ValueError, match="^Reunião não encontrada$"):
+        rig.jobs.rescan("nada")
+    with pytest.raises(ValueError, match="^O criador de issues está desligado$"):
+        rig.jobs.rescan(mid)
+    settings.update({"issues_enabled": True})
+    settings.store.set_setting("issues_root", str(tmp_path / "sumiu"))
+    with pytest.raises(ValueError, match="^Pasta raiz não encontrada: "):
+        rig.jobs.rescan(mid)
+    settings.store.set_setting("issues_root", str(tmp_path))
+    empty = store.create_meeting(T0).id
+    with pytest.raises(ValueError, match="^A reunião não tem transcrição para levantar tarefas$"):
+        rig.jobs.rescan(empty)
+    assert rig.bus.events == [] and store.get_job(mid, "tasks") is None
+
+
+def test_rescan_busy_and_disabled(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    store.set_job(mid, "tasks", "running")
+    with pytest.raises(JobBusy):
+        rig.jobs.rescan(mid)
+    settings.update({"issues_enabled": False})
+    with pytest.raises(ValueError, match="desligado"):
+        rig.jobs.rescan(mid)
+
+
+def test_rescan_marks_running_synchronously_then_runs(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    store.set_job(mid, "tasks", "error", "antigo")
+    release = threading.Event()
+    rig.on_scan = lambda: release.wait(10)
+    rig.jobs.rescan(mid)
+    assert store.get_job(mid, "tasks").state == "running"
+    assert job_event(mid, "tasks", "running") in rig.bus.events
+    with pytest.raises(JobBusy):
+        rig.jobs.rescan(mid)  # segundo clique enquanto roda
+    release.set()
+    rig.wait_idle()
+    assert store.get_job(mid, "tasks").state == "done" and store.get_job(mid, "tasks").error is None
+    assert len(rig.scans) == 1
+
+
+def test_rescan_uses_existing_summary_and_replaces_only_untouched(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    store.set_summary(mid, "S")
+    stale = store.add_task(mid, {"title": "Velha"}, origin="claude")
+    kept = store.add_task(mid, {"title": "Editada"}, origin="claude")
+    store.update_task(kept.id, {"title": "Editada 2"})
+    rig.scan_result = [scan_item("Nova")]
+    rig.jobs.rescan(mid)
+    rig.wait_idle()
+    assert rig.scans[0]["summary"] == "S"
+    titles = [t.title for t in store.list_tasks(mid)]
+    assert "Velha" not in titles and "Editada 2" in titles and "Nova" in titles
+    assert stale.id not in [t.id for t in store.list_tasks(mid)]
+
+
+def test_scan_of_deleted_meeting_is_silent(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.on_scan = lambda: store.delete_meeting(mid)
+    rig.ready(mid)
+    assert store.list_tasks(mid) == [] and store.get_job(mid, "tasks") is None
+    assert rig.events("tasks_changed") == []
+    assert job_event(mid, "tasks", "done") not in rig.bus.events
+    assert job_event(mid, "tasks", "error") not in rig.bus.events
+
+
+def test_summary_of_deleted_meeting_is_silent(rig, store, mid):
+    def gone(transcript, prompt):
+        store.delete_meeting(mid)
+        return "R"
+
+    rig.claude.summarize = gone
+    rig.ready(mid)
+    assert store.get_summary(mid) is None
+    assert job_event(mid, "summary", "done") not in rig.bus.events
+    rig.jobs.on_ready(mid)  # e a fila continua viva
+    rig.wait_idle()
+
+
+def test_jobs_sync_claude_settings(rig, store, settings, mid):
+    settings.update({"issues_enabled": True, "claude_bin": "/x/claude", "claude_model": "sonnet",
+                     "claude_effort": "low", "tasks_model": "opus", "tasks_effort": "max"})
+    rig.ready(mid)
+    # o resumo usa claude_*; o levantamento usa tasks_*
+    assert rig.claude.summarize_calls[0][2:] == ("/x/claude", "sonnet", "low")
+    assert rig.scans[0]["cli"] is rig.tasks_claude
+    assert (rig.scans[0]["bin"], rig.scans[0]["model"], rig.scans[0]["effort"]) == ("/x/claude", "opus", "max")
+
+    settings.update({"claude_bin": "/y/claude", "tasks_model": None, "tasks_effort": None})
+    store.set_job(mid, "tasks", "done")
+    rig.jobs.rescan(mid)
+    rig.wait_idle()
+    assert (rig.scans[1]["bin"], rig.scans[1]["model"], rig.scans[1]["effort"]) == ("/y/claude", None, None)
+    assert (rig.claude.model, rig.claude.effort) == ("sonnet", "low")  # o cli do resumo não é tocado pelo levantamento
+
+
+# -- criação -------------------------------------------------------------------
+
+
+def make_tasks(store, mid, n=3, **fields):
+    base = dict(kind="tarefa", title="T", product_id=4, assignee_id=9, team_id=3, stage_id=2)
+    base.update(fields)
+    ids = [store.add_task(mid, {**base, "title": f"T{i}"}, origin="claude").id for i in range(n)]
+    return store.claim_tasks_for_create(ids)
+
+
+def test_create_records_outcomes(rig, store, mid):
+    ids = make_tasks(store, mid)
+    rig.issues_client.outcomes = [
+        CreateOutcome("created", 101, "https://k/101", None),
+        CreateOutcome("uncertain", None, None, "Pode ter sido criada — confira no MCP de issues"),
+        CreateOutcome("failed", None, None, "recusado"),
+    ]
+    rig.jobs.create(ids)
+    rig.wait_idle()
+    a, b, c = (store.get_task(i) for i in ids)
+    assert (a.create_state, a.issue_number, a.issue_url) == ("created", 101, "https://k/101")
+    assert (b.create_state, b.create_error) == ("uncertain", "Pode ter sido criada — confira no MCP de issues")
+    assert (c.create_state, c.create_error) == ("failed", "recusado")
+    assert rig.events("tasks_changed") == [{"type": "tasks_changed", "meeting_id": mid}] * 3
+    assert [f.title for f in rig.issues_client.sent] == ["T0", "T1", "T2"]
+
+
+def test_create_created_keeps_conference_error(rig, store, mid):
+    ids = make_tasks(store, mid, 1)
+    rig.issues_client.outcomes = [CreateOutcome("created", 5, "https://k/5", "Etapa diferente da pedida")]
+    rig.jobs.create(ids)
+    rig.wait_idle()
+    t = store.get_task(ids[0])
+    assert (t.create_state, t.create_error) == ("created", "Etapa diferente da pedida")
+
+
+def test_create_missing_fields_fail_without_calling_issues_client(rig, store, mid):
+    ids = make_tasks(store, mid, 2, assignee_id=None)
+    rig.jobs.create(ids)
+    rig.wait_idle()
+    for i in ids:
+        t = store.get_task(i)
+        assert (t.create_state, t.create_error) == ("failed", "Falta: responsável")
+    assert rig.issues_client.sent == []
+
+
+def test_create_unexpected_exception_marks_uncertain(rig, store, mid):
+    ids = make_tasks(store, mid, 2)
+    rig.issues_client.outcomes = [RuntimeError("bug"), CreateOutcome("created", 9, "u", None)]
+    rig.jobs.create(ids)
+    rig.wait_idle()
+    t = store.get_task(ids[0])
+    assert (t.create_state, t.create_error) == ("uncertain", "Erro inesperado na criação — confira no MCP de issues")
+    assert store.get_task(ids[1]).create_state == "created"  # o item seguinte não é afetado
+
+
+def test_create_invalid_outcome_state_marks_uncertain(rig, store, mid):
+    ids = make_tasks(store, mid, 1)
+    rig.issues_client.outcomes = [CreateOutcome("nope", None, None, None)]
+    rig.jobs.create(ids)
+    rig.wait_idle()
+    assert store.get_task(ids[0]).create_state == "uncertain"
+
+
+def test_create_skips_vanished_task(rig, store, mid):
+    ids = make_tasks(store, mid, 2)
+    store.delete_meeting(mid)
+    other = store.create_meeting(T0).id
+    ids2 = make_tasks(store, other, 1)
+    rig.issues_client.outcomes = [CreateOutcome("created", 1, "u", None)]
+    rig.jobs.create(ids + ids2)
+    rig.wait_idle()
+    assert store.get_task(ids2[0]).create_state == "created"
+    assert len(rig.issues_client.sent) == 1
+    assert rig.events("tasks_changed") == [{"type": "tasks_changed", "meeting_id": other}]
+
+
+def test_create_syncs_claude_settings(rig, store, settings, mid):
+    settings.update({"claude_bin": "/x/claude", "claude_model": "sonnet", "tasks_model": "opus",
+                     "tasks_effort": "xhigh"})
+    ids = make_tasks(store, mid, 1)
+    seen = []
+
+    def create_issue(fields):
+        seen.append((rig.tasks_claude.bin_path, rig.tasks_claude.model, rig.tasks_claude.effort))
+        return CreateOutcome("created", 1, "u", None)
+
+    rig.issues_client.create_issue = create_issue
+    rig.jobs.create(ids)
+    rig.wait_idle()
+    assert seen == [("/x/claude", "opus", "xhigh")]
+
+
+def test_create_does_not_wait_for_the_claude_worker(rig, store, mid):
+    release = threading.Event()
+    rig.claude.summarize = lambda t, p: release.wait(10) and "R"
+    rig.jobs.on_ready(mid)  # trava a fila do Claude
+    ids = make_tasks(store, mid, 1)
+    rig.issues_client.outcomes = [CreateOutcome("created", 1, "u", None)]
+    rig.jobs.create(ids)
+    rig.jobs._create_worker.submit(lambda: None, gated=False).result(5)
+    assert store.get_task(ids[0]).create_state == "created"
+    release.set()
+    rig.wait_idle()
+
+
+# -- encerramento ----------------------------------------------------------------
+
+
+def test_shutdown_kills_running_claude(rig, monkeypatch):
+    calls = []
+    monkeypatch.setattr(jobs_mod.runner, "kill_all", lambda: calls.append("kill"))
+    rig.jobs.shutdown()
+    assert calls == ["kill"]
+
+
+def test_scan_after_shutdown_does_not_call_claude(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.jobs.shutdown()
+    rig.jobs._scan(mid)
+    assert rig.scans == [] and rig.options.calls == 0
+
+
+def test_summarize_after_shutdown_does_not_call_claude(rig, store, mid):
+    rig.jobs.shutdown()
+    rig.jobs._summarize(mid)
+    assert rig.claude.summarize_calls == []
+
+
+def test_after_shutdown_queued_work_is_dropped(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    release = threading.Event()
+    rig.claude.summarize = lambda t, p: release.wait(10) and "R"
+    rig.jobs.on_ready(mid)
+    ids = make_tasks(store, mid, 1)
+    rig.jobs.shutdown()
+    release.set()
+    rig.jobs.create(ids)
+    rig.wait_idle()
+    assert rig.issues_client.sent == [] and rig.scans == []
+    assert store.get_task(ids[0]).create_state == "failed"  # nada foi enviado: não fica preso em "creating"

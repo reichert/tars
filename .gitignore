@@ -1,0 +1,39 @@
+.venv/
+__pycache__/
+*.pyc
+.superpowers/
+data/
+*.raw
+
+# app desktop (Tauri)
+app/node_modules/
+app/dist/
+app/src-tauri/target/
+
+# Protótipo visual isolado
+app/dist-design-demo/
+
+# Dados e credenciais locais
+.env
+.env.*
+!.env.example
+*.db
+*.db-*
+*.sqlite*
+api.json
+*.raw
+*.wav
+*.opus
+*.mp3
+*.mp4
+*.log
+backups/
+meetings/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+# Documentos de trabalho e capturas locais
+docs/design-redesign/
+docs/superpowers/

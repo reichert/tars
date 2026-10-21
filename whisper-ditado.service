@@ -1,0 +1,20 @@
+[Unit]
+Description=Ditado por voz com Whisper (segure Ctrl+Win para falar)
+After=graphical-session.target ydotool.service
+Wants=ydotool.service
+PartOf=graphical-session.target
+
+[Service]
+ExecStart="@PROJECT_ROOT@/run.sh"
+Restart=on-failure
+RestartSec=5
+Environment=PYTHONUNBUFFERED=1
+# Ajustes opcionais (veja README.md). Depois de mudar:
+#   systemctl --user daemon-reload && systemctl --user restart whisper-ditado
+#Environment=DITADO_KEY=ctrl+super
+#Environment=DITADO_LANG=pt
+#Environment=DITADO_MODEL=large-v3-turbo
+#Environment=DITADO_PASTE=shift+insert
+
+[Install]
+WantedBy=graphical-session.target

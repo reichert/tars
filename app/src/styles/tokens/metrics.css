@@ -1,0 +1,25 @@
+:root {
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-code: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --font-meta: 0.8125rem;
+  --font-control: 0.875rem;
+  --font-body: 1rem;
+  --font-h2: 1.25rem;
+  --font-h1: 1.5625rem;
+  --control-sm: 2rem;
+  --control-md: 2.5rem;
+  --control-lg: 2.75rem;
+  --nav-width: 16rem;
+  --read-max: 72ch;
+  --page-gutter: 2rem;
+}

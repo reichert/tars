@@ -1,0 +1,2 @@
+# Correções opcionais: expressão reconhecida => expressão correta
+# pul request => pull request

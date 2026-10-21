@@ -1,0 +1,203 @@
+[
+  {
+    "id": 32,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Audio/Sink",
+        "node.description": "OBS Mudo",
+        "node.name": "obs_mudo",
+        "object.id": 32
+      }
+    }
+  },
+  {
+    "id": 41,
+    "type": "PipeWire:Interface:Metadata",
+    "props": {
+      "metadata.name": "default"
+    },
+    "metadata": [
+      {
+        "subject": 0,
+        "key": "default.configured.audio.source",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_input.pci-0000_09_00.4.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.audio.sink",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_output.pci-0000_09_00.4.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.audio.source",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "alsa_input.pci-0000_09_00.4.analog-stereo"
+        }
+      },
+      {
+        "subject": 0,
+        "key": "default.video.source",
+        "type": "Spa:String:JSON",
+        "value": {
+          "name": "v4l2_input.pci-0000_09_00.3-usb-0_4_1.0"
+        }
+      }
+    ]
+  },
+  {
+    "id": 51,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Midi/Bridge",
+        "node.name": "Midi-Bridge",
+        "object.id": 51
+      }
+    }
+  },
+  {
+    "id": 54,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Midi/Bridge",
+        "node.description": "BLE MIDI 1",
+        "node.name": "bluez_midi.server",
+        "object.id": 54
+      }
+    }
+  },
+  {
+    "id": 60,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Audio/Source",
+        "node.description": "Webcam C270 Mono",
+        "node.name": "alsa_input.usb-046d_C270_HD_WEBCAM_200901010001-02.mono-fallback",
+        "node.nick": "C270 HD WEBCAM",
+        "object.id": 60
+      }
+    }
+  },
+  {
+    "id": 61,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Audio/Sink",
+        "node.description": "Starship/Matisse HD Audio Controller Estéreo analógico",
+        "node.name": "alsa_output.pci-0000_09_00.4.analog-stereo",
+        "node.nick": "ALCS1200A Analog",
+        "object.id": 61
+      }
+    }
+  },
+  {
+    "id": 62,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Audio/Source",
+        "node.description": "Starship/Matisse HD Audio Controller Estéreo analógico",
+        "node.name": "alsa_input.pci-0000_09_00.4.analog-stereo",
+        "node.nick": "ALCS1200A Analog",
+        "object.id": 62
+      }
+    }
+  },
+  {
+    "id": 74,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Video/Source",
+        "node.description": "C270 HD WEBCAM (V4L2)",
+        "node.name": "v4l2_input.pci-0000_09_00.3-usb-0_4_1.0",
+        "node.nick": "C270 HD WEBCAM",
+        "object.id": 74
+      }
+    }
+  },
+  {
+    "id": 66,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "suspended",
+      "props": {
+        "media.class": "Audio/Sink",
+        "node.description": "GB203 High Definition Audio Controller Estéreo digital (HDMI)",
+        "node.name": "alsa_output.pci-0000_07_00.1.hdmi-stereo",
+        "node.nick": "LU28R55",
+        "object.id": 66
+      }
+    }
+  },
+  {
+    "id": 120,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "running",
+      "props": {
+        "node.name": "Firefox",
+        "media.class": "Stream/Input/Audio",
+        "application.name": "Firefox",
+        "application.process.id": 4242,
+        "application.process.binary": "firefox",
+        "client.api": "pipewire-pulse",
+        "media.name": "AudioStream",
+        "object.id": 120
+      }
+    }
+  },
+  {
+    "id": 121,
+    "type": "PipeWire:Interface:Node",
+    "info": {
+      "state": "running",
+      "props": {
+        "node.name": "Firefox",
+        "media.class": "Stream/Output/Audio",
+        "application.name": "Firefox",
+        "application.process.id": 4242,
+        "application.process.binary": "firefox",
+        "client.api": "pipewire-pulse",
+        "media.name": "AudioStream",
+        "object.id": 121
+      }
+    }
+  },
+  {
+    "id": 130,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 62,
+      "input-node-id": 120,
+      "state": "active"
+    }
+  },
+  {
+    "id": 131,
+    "type": "PipeWire:Interface:Link",
+    "info": {
+      "output-node-id": 121,
+      "input-node-id": 61,
+      "state": "active"
+    }
+  }
+]

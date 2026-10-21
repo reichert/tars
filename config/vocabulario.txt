@@ -1,0 +1,7 @@
+# Termos de exemplo. Personalize em Configurações → Vocabulário.
+deploy
+pull request
+GitHub
+Python
+Docker
+Whisper

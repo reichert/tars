@@ -1,0 +1,13 @@
+/* Campos de domínio usam o mesmo vocabulário visual do sistema Mineral. */
+.s-section { max-width:720px; display:flex; flex-direction:column; gap:var(--space-6); }
+.s-section h2 { font-size:var(--font-h2); font-weight:600; margin:0; }
+.s-input,.s-select,.s-textarea { width:100%; min-height:var(--control-md); padding:10px 12px; background:var(--surface); color:var(--text); border:1px solid var(--border-control); border-radius:var(--radius-md); font:inherit; font-size:var(--font-control); }
+.s-input[aria-invalid=true],.s-select[aria-invalid=true],.s-textarea[aria-invalid=true] { border-color:var(--danger); }
+.s-textarea { resize:vertical; min-height:120px; line-height:1.6; }
+.s-textarea.mono { font-family:var(--font-code); font-size:var(--font-control); min-height:320px; }
+.s-input.short { max-width:180px; }
+.s-btn.danger { color:var(--danger); }
+.s-row { display:flex; gap:var(--space-2); align-items:center; flex-wrap:wrap; }
+.s-note { color:var(--muted); font-size:var(--font-meta); margin:0; line-height:1.65; max-width:72ch; }
+.s-ok { color:var(--success); font-size:var(--font-meta); }
+.s-error { color:var(--danger); font-size:var(--font-meta); margin:0; overflow-wrap:anywhere; }
