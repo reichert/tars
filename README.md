@@ -8,12 +8,13 @@ Ditado por voz em qualquer janela: **segure Ctrl + Win (Super), fale e solte**. 
 transcrito pelo Whisper (faster-whisper `large-v3-turbo`, na GPU) é colado onde
 está o cursor.
 
-Feito para GNOME no Wayland: o teclado é lido via evdev (o usuário precisa estar no
-grupo `input`) e a colagem usa `wl-copy` (Wayland) ou `xclip` (X11) + `ydotool` (serviço `ydotool.service`).
+Feito para GNOME (Wayland ou X11): o teclado é lido via evdev (o usuário precisa estar no
+grupo `input`) e a colagem copia o texto com `wl-copy` (Wayland) ou `xclip` (X11, com `xsel`
+como alternativa) e simula o atalho de colar com o `ydotool` (serviço `ydotool.service`).
 
 ## Estado do projeto
 
-Primeira versão pública, destinada a **Linux com GNOME/Wayland, PipeWire e GPU NVIDIA**.
+Primeira versão pública, destinada a **Linux com GNOME (Wayland ou X11), PipeWire e GPU NVIDIA**.
 O reconhecimento usa CUDA; CPU, macOS e Windows ainda não são suportados pelo backend atual.
 Whisper e separação de falantes rodam localmente. Resumos e criação de issues usam o Claude Code
 (opcional) e podem enviar a transcrição para esse serviço e os campos aprovados para o MCP.
@@ -108,6 +109,16 @@ systemctl --user disable --now whisper-ditado-backend  # desligar
 ```
 
 Rodar manualmente (para depurar): `./run-backend.sh` (com o serviço parado).
+
+Ao iniciar, o log informa a sessão usada para colar (`Colagem pelo clipboard da sessão wayland`
+ou `x11`). Se aparecer o aviso de que o ditado não vai conseguir colar, o serviço subiu sem as
+variáveis da sessão gráfica. No X11 ele precisa de `DISPLAY` e `XAUTHORITY`; importe-as e
+reinicie:
+
+```bash
+systemctl --user import-environment WAYLAND_DISPLAY DISPLAY XAUTHORITY
+systemctl --user restart whisper-ditado-backend
+```
 
 ### Daemon legado
 
