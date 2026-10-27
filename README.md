@@ -177,6 +177,63 @@ As variáveis `DITADO_VOCAB` e `DITADO_SUBS` só são usadas pelo daemon antigo 
 Se o vocabulário fizer o Whisper entrar em loop ("revisado, revisado, revisado..."), o daemon
 detecta e transcreve de novo, bloqueando repetições.
 
+## Avaliador de ditado
+
+Em **Configurações → Ditado → Avaliador de ditado**, ligue a coleta de exemplos. Vem desligada
+por padrão; também pode ser configurada com `DITADO_DICTATION_EVALUATION_ENABLED=1` ou
+`PUT /api/settings` com `{"dictation_evaluation_enabled": true}`. Não precisa reiniciar para
+ligar/desligar pelo app. A opção vale para as próximas gravações; desligar antes de soltar o
+atalho também impede que aquela gravação seja coletada.
+
+O ditado continua transcrevendo e colando normalmente. Depois da tentativa de colagem, uma
+fila separada salva **todos os ditados válidos**, tanto os acertos quanto os possíveis erros,
+incluindo transcrições vazias e falhas de transcrição/colagem. Gravações canceladas ou abaixo
+da duração mínima continuam descartadas. Falhas de disco ou fila cheia são registradas nos
+logs e não interrompem a colagem.
+
+Os exemplos ficam em `$XDG_DATA_HOME/whisper-ditado/dictation-samples/<id>/` (padrão
+`~/.local/share/whisper-ditado/dictation-samples/<id>/`):
+
+- `audio.wav`: áudio original, mono, PCM 16 bits, 16 kHz, sem redução de ruído;
+- `sample.json`: texto produzido, horário, duração, sucesso da colagem, eventual erro e
+  configuração do transcritor, vocabulário e substituições usados;
+- o índice e as avaliações ficam na tabela `dictation_samples` do `ditado.db` existente.
+
+Pastas são privadas (0700), arquivos 0600. Desligar a coleta preserva os exemplos existentes;
+não há exclusão automática. A coleta **não envia áudio para serviços externos**.
+
+### Comparação em lote com um modelo que escuta áudio
+
+A ferramenta usa a [entrada de áudio do Gemini](https://ai.google.dev/gemini-api/docs/audio)
+para obter uma transcrição independente, sem mostrar ao avaliador o texto do Whisper.
+Depois compara as palavras, ignorando pontuação e caixa, e salva a referência, as diferenças,
+as dúvidas e a identificação do modelo. Isso reúne evidências para ajustar vocabulário,
+substituições ou o reconhecimento; nenhuma correção é aplicada automaticamente.
+
+Na raiz do projeto:
+
+```bash
+# Somente operações locais, sem chave nem acesso à rede:
+.venv/bin/python -m whisper_ditado.evaluation report
+.venv/bin/python -m whisper_ditado.evaluation export > /caminho/privado/ditados.jsonl
+
+# Defina GEMINI_API_KEY no ambiente antes de executar.
+# Este comando envia até 20 áudios pendentes ao serviço Gemini, sujeito à cota/cobrança da API:
+.venv/bin/python -m whisper_ditado.evaluation evaluate --limit 20
+
+# Para escolher outro modelo que aceite áudio e saída JSON:
+.venv/bin/python -m whisper_ditado.evaluation evaluate --limit 10 --model gemini-2.5-flash
+```
+
+O modelo padrão é `gemini-2.5-flash`. Cada resultado é salvo antes de passar ao próximo áudio;
+uma nova execução continua pelos pendentes. Falhas de rede/API mantêm o exemplo pendente.
+O export inclui os caminhos dos WAVs e os resultados em JSONL, permitindo análise posterior.
+O relatório separa concordâncias, divergências e casos incertos e agrupa diferenças recorrentes.
+
+**A avaliação por IA é uma estimativa sujeita a revisão humana**, não uma medida de acurácia
+real. O modelo também pode errar. Os originais permanecem preservados para conferir e comparar
+melhorias futuras; o banco não treina nem modifica o Whisper automaticamente.
+
 ## Backend
 
 O processo em `src/whisper_ditado/` reúne o ditado, a gravação de reuniões (microfone + áudio do
@@ -242,6 +299,9 @@ cd app && pnpm tauri dev                                  # desenvolvimento
   novo, senão o app some do login e do menu.
 - Fechar a janela só esconde (o app fica na bandeja). Para sair, use "Sair" na bandeja; com uma
   gravação em andamento, ele pede para parar antes.
+- Para identificar uma pessoa, clique na etiqueta dela no cabeçalho da reunião. Em **Ouvir esta
+  pessoa**, escolha um dos até três trechos de no máximo dez segundos; os controles permitem
+  pausar e repetir enquanto você renomeia ou identifica a voz. Fechar o menu interrompe o áudio.
 - A pílula roda num segundo processo forçado em XWayland (`GDK_BACKEND=x11`), onde "sempre por cima"
   e "clique atravessa" funcionam no GNOME.
 - No Linux com driver NVIDIA carregado, a janela principal inicia com

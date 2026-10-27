@@ -1,14 +1,17 @@
 <script setup lang="ts">
 // Menu de uma etiqueta de falante (não aparece para "Você"): renomear só nesta reunião,
-// identificar como uma voz cadastrada/nova (guarda o embedding) ou juntar com outro falante.
+// ouvir trechos, identificar como uma voz cadastrada/nova ou juntar com outro falante.
 // Chama a API sozinho; ao dar certo emite `changed` (o pai recarrega o detalhe) e `close`.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useFocusScope } from "../composables/useFocusScope";
-import type { Speaker, Voice } from "../api/types";
+import type { Segment, Speaker, Voice } from "../api/types";
 import { useStatus } from "../composables/useStatus";
 import { speakerName } from "../lib/meeting";
+import SpeakerSamples from "./SpeakerSamples.vue";
 
 const props = defineProps<{
+  meetingId: string;
+  segments: Segment[];
   speaker: Speaker;
   /** Todos os falantes da reunião (os "outros" são os candidatos a juntar). */
   speakers: Speaker[];
@@ -16,7 +19,7 @@ const props = defineProps<{
   x: number;
   y: number;
 }>();
-const emit = defineEmits<{ changed: []; close: [] }>();
+const emit = defineEmits<{ changed: []; close: []; preview: [] }>();
 
 const { client } = useStatus();
 
@@ -101,6 +104,12 @@ onBeforeUnmount(() => { window.removeEventListener("resize", updateViewport); re
   <div ref="root" class="speaker-menu" role="dialog" aria-modal="true" :aria-label="`Opções de ${speakerName(speaker)}`" tabindex="-1" @keydown.esc.stop.prevent="emit('close')">
     <div class="backdrop" @click="emit('close')"></div>
     <div ref="panel" class="panel" :style="style">
+      <SpeakerSamples
+        :meeting-id="meetingId"
+        :speaker="speaker"
+        :segments="segments"
+        @play="emit('preview')"
+      />
       <template v-if="mode === 'main'">
         <button type="button" class="option" @click="go('rename')">Renomear nesta reunião</button>
         <button type="button" class="option" @click="go('identify')">Identificar como…</button>

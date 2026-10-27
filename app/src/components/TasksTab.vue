@@ -3,7 +3,7 @@
 // aberta por vez à direita. O operador revisa as sugestões do Claude, edita, descarta, adiciona,
 // copia/exporta e cria no MCP de issues uma de cada vez. Nada é criado sem clique, e o pedido de criação
 // leva os campos que estão na tela (não os do último salvamento).
-import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref, useId, watch } from "vue";
 import { writeText } from "@tauri-apps/plugin-clipboard-manager";
 import { save } from "@tauri-apps/plugin-dialog";
 import { writeTextFile } from "@tauri-apps/plugin-fs";
@@ -41,6 +41,8 @@ const items = ref<TaskSuggestion[]>([]);
 const options = ref<IssueOptions | null>(null);
 const optionsError = ref<string | null>(null);
 const actionError = ref<string | null>(null);
+const scanContext = ref("");
+const contextId = useId();
 // Erro por cartão (recusa na criação, falha ao salvar, ao resolver).
 const cardErrors = ref<Record<string, string>>({});
 // Tarefa aberta à direita (por id: sobrevive às recargas).
@@ -292,12 +294,23 @@ async function run(name: string, fn: () => Promise<void>): Promise<void> {
 
 function rescan(): Promise<void> {
   return run("scan", async () => {
-    await client.scanTasks(props.meetingId);
+    const context = scanContext.value.trim();
+    if (context) await client.scanTasks(props.meetingId, context);
+    else await client.scanTasks(props.meetingId);
     scan.value = {
       state: "running",
       error: null,
       updated_at: new Date().toISOString(),
     };
+    await load();
+  });
+}
+
+function cancelScan(): Promise<void> {
+  return run("cancel-scan", async () => {
+    const result = await client.cancelTasksScan(props.meetingId);
+    loadSeq++; // descarta cargas anteriores ao cancelamento
+    scan.value = result.scan;
     await load();
   });
 }
@@ -381,7 +394,7 @@ async function createInIssue(t: TaskSuggestion): Promise<void> {
       <button
         type="button"
         class="btn"
-        :disabled="!connected || !enabled || running || isBusy('scan')"
+        :disabled="!connected || !enabled || running || isBusy('scan') || isBusy('cancel-scan')"
         :title="enabled ? undefined : 'O criador de issues está desligado'"
         @click="rescan"
       >
@@ -403,6 +416,24 @@ async function createInIssue(t: TaskSuggestion): Promise<void> {
       </button>
     </div>
 
+    <details v-if="enabled || items.length" class="scan-context">
+      <summary>Contexto para refazer sugestões{{ scanContext.trim() ? " (preenchido)" : " (opcional)" }}</summary>
+      <label :for="contextId">Como você quer orientar as sugestões?</label>
+      <textarea
+        :id="contextId"
+        v-model="scanContext"
+        :aria-describedby="`${contextId}-hint`"
+        :disabled="!connected || !enabled || running || isBusy('scan')"
+        rows="3"
+        maxlength="10000"
+        placeholder="Ex.: Foque nas pendências do checkout e agrupe os ajustes de pagamento em uma tarefa."
+      ></textarea>
+      <p :id="`${contextId}-hint`">
+        O texto será usado junto com a transcrição ao clicar em Refazer sugestões.
+        Tarefas editadas, descartadas ou já enviadas são preservadas.
+      </p>
+    </details>
+
     <p v-if="loadError" class="error" role="alert">{{ loadError }}</p>
     <p v-if="actionError" class="error" role="alert">{{ actionError }}</p>
     <p v-if="showOptionsError" class="warn">
@@ -412,13 +443,27 @@ async function createInIssue(t: TaskSuggestion): Promise<void> {
       </button>
     </p>
 
-    <p v-if="running" class="muted" role="status">Levantando tarefas…</p>
+    <div v-if="running" class="scan-status">
+      <span class="muted" role="status">{{ isBusy('cancel-scan') ? "Cancelando levantamento…" : "Levantando tarefas…" }}</span>
+      <button
+        type="button"
+        class="btn"
+        :disabled="!connected || isBusy('cancel-scan')"
+        @click="cancelScan"
+      >
+        <AppIcon name="close" :size="16" />
+        {{ isBusy('cancel-scan') ? "Cancelando…" : "Cancelar levantamento" }}
+      </button>
+    </div>
+    <p v-else-if="scan?.state === 'cancelled'" class="muted" role="status">
+      Levantamento cancelado.
+    </p>
     <p v-else-if="scan?.state === 'error'" class="error">
       O levantamento de tarefas falhou: {{ scan.error ?? "erro desconhecido" }}
       <button
         type="button"
         class="btn"
-        :disabled="isBusy('scan')"
+        :disabled="!connected || !enabled || running || isBusy('scan')"
         @click="rescan"
       >
         Tentar de novo
@@ -574,6 +619,7 @@ async function createInIssue(t: TaskSuggestion): Promise<void> {
   padding: 12px var(--page-gutter) 0;
   min-height: 0;
   container: tasks / inline-size;
+  overflow-y: auto;
 }
 .toolbar {
   display: flex;
@@ -586,11 +632,60 @@ async function createInIssue(t: TaskSuggestion): Promise<void> {
 .spacer {
   flex: 1;
 }
+.scan-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 12px;
+  margin-bottom: 14px;
+  flex-shrink: 0;
+}
+.scan-context {
+  flex-shrink: 0;
+  margin-bottom: 14px;
+  font-size: var(--font-control);
+}
+.scan-context summary {
+  width: fit-content;
+  max-width: 100%;
+  padding: 6px 0;
+  cursor: pointer;
+  color: var(--muted);
+}
+.scan-context summary:hover {
+  color: var(--text);
+}
+.scan-context label {
+  display: block;
+  margin: 8px 0 6px;
+  font-weight: 500;
+}
+.scan-context textarea {
+  display: block;
+  width: 100%;
+  min-height: 80px;
+  max-height: 160px;
+  resize: vertical;
+  padding: 8px 12px;
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  color: var(--text);
+}
+.scan-context textarea:disabled {
+  opacity: 0.55;
+}
+.scan-context p {
+  max-width: 75ch;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: var(--font-meta);
+}
 .panes {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 220px minmax(0, 1fr);
+  grid-template-columns: minmax(220px, 25%) minmax(0, 1fr);
   gap: 24px;
 }
 .list {
@@ -731,7 +826,7 @@ async function createInIssue(t: TaskSuggestion): Promise<void> {
   font-size: var(--font-meta);
   margin: 0 0 14px;
 }
-@container tasks (max-width:760px) {
+@container tasks (max-width:920px) {
   .panes {
     grid-template-columns: minmax(0, 1fr);
   }

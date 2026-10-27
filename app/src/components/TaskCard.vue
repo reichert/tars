@@ -430,6 +430,7 @@ function informNumber(): void {
 
 <style scoped>
 .task {
+  container: task-editor / inline-size;
   display: flex;
   flex-direction: column;
   gap: 16px;
@@ -479,14 +480,14 @@ function informNumber(): void {
 input,
 select,
 textarea {
-  min-height: 40px;
+  min-height: 44px;
   padding: 10px 12px;
   border: 1px solid var(--border-control);
   border-radius: 6px;
   background: var(--surface);
   color: var(--text);
   font-family: inherit;
-  font-size: 0.85rem;
+  font-size: var(--font-control);
 }
 input:disabled,
 select:disabled,
@@ -494,13 +495,14 @@ textarea:disabled {
   opacity: 0.6;
 }
 .title-input {
+  min-height: 52px;
   font-size: 1rem;
   font-weight: 600;
 }
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(170px, 1fr));
-  gap: 8px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px 16px;
 }
 .grid label {
   display: flex;
@@ -516,9 +518,9 @@ textarea:disabled {
 }
 .description {
   flex: 1 1 auto;
-  resize: none;
-  min-height: 180px;
-  line-height: 1.4;
+  resize: vertical;
+  min-height: clamp(260px, 38vh, 420px);
+  line-height: 1.6;
 }
 .evidence {
   list-style: none;
@@ -583,6 +585,12 @@ textarea:disabled {
   flex: 1;
 }
 .description-field textarea {
-  font-size: var(--font-control);
+  font-size: var(--font-body);
+}
+@container task-editor (max-width: 600px) {
+  .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@container task-editor (max-width: 360px) {
+  .grid { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

@@ -10,6 +10,8 @@ import os
 import signal
 import subprocess
 import threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 _live: set[subprocess.Popen] = set()
 _live_lock = threading.Lock()
@@ -39,3 +41,54 @@ def kill_all() -> None:
     for proc in procs:
         if proc.poll() is None:
             kill_group(proc)
+
+
+class ProcessCancelled(Exception):
+    """O operador cancelou este trabalho, sem afetar os outros subprocessos."""
+
+
+class Cancellation:
+    def __init__(self) -> None:
+        self._cancelled = threading.Event()
+        self._lock = threading.Lock()
+        self._procs: set[subprocess.Popen] = set()
+
+    def check(self) -> None:
+        if self._cancelled.is_set():
+            raise ProcessCancelled()
+
+    def attach(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            if self._cancelled.is_set():
+                kill_group(proc)  # cobre o cancelamento entre o Popen e o registro
+            else:
+                self._procs.add(proc)
+
+    def detach(self, proc: subprocess.Popen) -> None:
+        with self._lock:
+            self._procs.discard(proc)
+
+    def cancel(self) -> None:
+        with self._lock:
+            self._cancelled.set()
+            for proc in self._procs:
+                if proc.poll() is None:
+                    kill_group(proc)
+
+
+_cancellation: ContextVar[Cancellation | None] = ContextVar("process_cancellation", default=None)
+
+
+def current_cancellation() -> Cancellation | None:
+    return _cancellation.get()
+
+
+@contextmanager
+def cancellation_scope(cancellation: Cancellation):
+    """Inclui também a consulta das opções feita na mesma thread do levantamento."""
+    token = _cancellation.set(cancellation)
+    try:
+        cancellation.check()
+        yield
+    finally:
+        _cancellation.reset(token)

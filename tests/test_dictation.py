@@ -41,6 +41,65 @@ class FakeRecorder:
         return np.zeros(int((time.monotonic() - self.started) * 16000), np.float32)
 
 
+@pytest.mark.parametrize("enabled", [False, True])
+def test_evaluation_is_optional_and_collects_after_pasting(tmp_path, enabled):
+    captured = []
+    h = Harness(tmp_path, FakeTranscriber(delay=0, opts=TranscriberOptions(prompt=DEFAULTS["prompt"])), samples=SimpleNamespace(
+        capture=lambda audio, **metadata: captured.append((len(h.pasted), audio, metadata)),
+    ))
+    try:
+        h.settings.update({"dictation_evaluation_enabled": enabled})
+        h.service.apply_settings()
+        audio = np.zeros(16000, np.float32)
+        h.service._transcribe_and_paste(audio)
+        assert h.texts == ["frase "]
+        assert len(captured) == int(enabled)
+        if enabled:
+            count, saved_audio, metadata = captured[0]
+            assert count == 1  # colar acontece antes de enfileirar
+            assert saved_audio is audio
+            assert metadata["transcript"] == "frase"
+            assert metadata["pasted"] is True and metadata["error"] is None
+            assert metadata["config"]["transcriber"]["model"] == "large-v3-turbo"
+    finally:
+        asyncio.run(h.close())
+
+
+@pytest.mark.parametrize("failure", ["empty", "transcribe", "paste", "collect"])
+def test_evaluation_preserves_failures_and_never_breaks_pasting(tmp_path, failure):
+    captured = []
+
+    def capture(audio, **metadata):
+        if failure == "collect":
+            raise OSError("coleta indisponível")
+        captured.append(metadata)
+
+    h = Harness(tmp_path, FakeTranscriber(text="" if failure == "empty" else "frase", delay=0,
+                                         opts=TranscriberOptions(prompt=DEFAULTS["prompt"])),
+                samples=SimpleNamespace(capture=capture))
+    try:
+        h.settings.update({"dictation_evaluation_enabled": True})
+        h.service.apply_settings()
+
+        def boom(*args):
+            raise RuntimeError("falha simulada")
+
+        if failure == "transcribe":
+            h.transcriber.transcribe_text = boom
+        if failure == "paste":
+            h.service._paste = boom
+        h.service._transcribe_and_paste(np.zeros(16000, np.float32))
+        if failure == "collect":
+            assert h.texts == ["frase "]
+        else:
+            metadata, = captured
+            assert metadata["pasted"] is False
+            assert metadata["transcript"] == ("frase" if failure == "paste" else "")
+            assert metadata["error"] == (None if failure == "empty" else "falha simulada")
+    finally:
+        asyncio.run(h.close())
+
+
 class FakeTranscriber:
     def __init__(self, text="frase", delay=0.3, opts=None, vocab=None):
         self.text, self.delay = text, delay
@@ -857,7 +916,7 @@ def test_busy_returns_to_zero_when_submit_raises(tmp_path):
     busy = DictationBusy()
 
     async def scenario(h):
-        def broken_submit(*_args):
+        def broken_submit(*_args, **_kwargs):
             raise ValueError("fila quebrada")
 
         h.press(LC)

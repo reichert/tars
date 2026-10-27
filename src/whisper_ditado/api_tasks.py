@@ -74,6 +74,10 @@ class CreateBody(BaseModel):
     items: list[CreateItemBody]
 
 
+class ScanBody(BaseModel):
+    context: str = Field("", max_length=10_000)
+
+
 class ResolveBody(BaseModel):
     action: Literal["retry", "number"]
     number: int | None = Field(None, gt=0)
@@ -155,15 +159,21 @@ def tasks_router(ctx, get_meeting: Callable[[str], object]) -> APIRouter:
         }
 
     @router.post("/meetings/{meeting_id}/tasks/scan", status_code=202)
-    def scan(meeting_id: str) -> dict:
+    def scan(meeting_id: str, body: ScanBody | None = None) -> dict:
         get_meeting(meeting_id)
         try:
-            ctx.jobs.rescan(meeting_id)
+            ctx.jobs.rescan(meeting_id, context=body.context.strip() if body else "")
         except JobBusy as exc:
             raise HTTPException(409, SCAN_BUSY) from exc
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
         return {"state": "running"}
+
+    @router.post("/meetings/{meeting_id}/tasks/scan/cancel")
+    def cancel_scan(meeting_id: str) -> dict:
+        get_meeting(meeting_id)
+        ctx.jobs.cancel_scan(meeting_id)
+        return {"scan": job_json(store.get_job(meeting_id, "tasks"))}
 
     @router.post("/meetings/{meeting_id}/tasks")
     def add_task(meeting_id: str, body: TaskFieldsBody) -> dict:

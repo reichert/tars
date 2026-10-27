@@ -6,6 +6,7 @@ import type {
   CreateResult,
   Devices,
   IssueOptions,
+  JobState,
   MeetingDetail,
   MeetingListItem,
   NameSuggestion,
@@ -16,6 +17,7 @@ import type {
   TaskSuggestion,
   TasksPayload,
   TextKind,
+  TrackSource,
   Voice,
 } from "./types";
 
@@ -121,9 +123,9 @@ export function createClient(getInfo: () => Promise<ApiInfo>, fetchFn: typeof fe
       json<{ id: string; title: string }>("PATCH", `/meetings/${enc(id)}`, { title }),
     deleteMeeting: (id: string) => json<{ ok: true }>("DELETE", `/meetings/${enc(id)}`),
     reprocess: (id: string) => json<{ meeting_id: string }>("POST", `/meetings/${enc(id)}/reprocess`),
-    /** Áudio mixado (ogg/opus) da reunião inteira ou do trecho [start, end) em segundos. */
-    audioBlob: async (id: string, start?: number, end?: number): Promise<Blob> =>
-      (await request("GET", `/meetings/${enc(id)}/audio${query({ start, end })}`)).blob(),
+    /** Áudio ogg/opus: mixado por padrão, ou somente a trilha solicitada. */
+    audioBlob: async (id: string, start?: number, end?: number, source?: TrackSource): Promise<Blob> =>
+      (await request("GET", `/meetings/${enc(id)}/audio${query({ start, end, source })}`)).blob(),
     /** Markdown da reunião (o nome do arquivo do backend não é exposto via CORS). */
     exportMarkdown: async (id: string): Promise<string> =>
       (await request("GET", `/meetings/${enc(id)}/export.md`)).text(),
@@ -133,8 +135,11 @@ export function createClient(getInfo: () => Promise<ApiInfo>, fetchFn: typeof fe
 
     // tarefas (criador de issues)
     listTasks: (meetingId: string) => json<TasksPayload>("GET", `/meetings/${enc(meetingId)}/tasks`),
-    scanTasks: (meetingId: string) =>
-      json<{ state: "running" }>("POST", `/meetings/${enc(meetingId)}/tasks/scan`),
+    scanTasks: (meetingId: string, context?: string) =>
+      json<{ state: "running" }>("POST", `/meetings/${enc(meetingId)}/tasks/scan`,
+        context?.trim() ? { context: context.trim() } : undefined),
+    cancelTasksScan: (meetingId: string) =>
+      json<{ scan: JobState | null }>("POST", `/meetings/${enc(meetingId)}/tasks/scan/cancel`),
     addTask: (meetingId: string, fields: Partial<TaskFields>) =>
       json<TaskSuggestion>("POST", `/meetings/${enc(meetingId)}/tasks`, fields),
     updateTask: (taskId: string, changes: Partial<TaskFields> & { discarded?: boolean }) =>

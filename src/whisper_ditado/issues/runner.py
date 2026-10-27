@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from whisper_ditado.claude_cli import ClaudeCli, ClaudeError
-from whisper_ditado.procs import kill_all, kill_group, register, unregister
+from whisper_ditado.procs import current_cancellation, kill_all, kill_group, register, unregister
 
 __all__ = ["MCP_SERVER", "StreamRun", "ToolCall", "kill_all", "run_stream"]
 
@@ -147,6 +147,9 @@ def run_stream(
         cmd += ["--effort", cli.effort]
 
     def execute(workdir: str) -> StreamRun:
+        cancellation = current_cancellation()
+        if cancellation is not None:
+            cancellation.check()
         try:
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -155,6 +158,8 @@ def run_stream(
         except (FileNotFoundError, PermissionError, NotADirectoryError) as e:
             raise ClaudeError("Claude Code não encontrado") from e
         register(proc)
+        if cancellation is not None:
+            cancellation.attach(proc)
         timed_out = False
         try:
             try:
@@ -170,7 +175,11 @@ def run_stream(
                 _drain(proc)
                 raise
         finally:
+            if cancellation is not None:
+                cancellation.detach(proc)
             unregister(proc)
+        if cancellation is not None:
+            cancellation.check()
         events = _parse_events(out)
         final = next((e for e in reversed(events) if e.get("type") == "result"), None)
         result = final.get("result") if final else None

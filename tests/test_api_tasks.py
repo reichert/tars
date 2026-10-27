@@ -47,16 +47,22 @@ class FakeBus(EventBus):
 class FakeJobs:
     def __init__(self):
         self.rescans = []
+        self.scan_contexts = []
+        self.cancelled_scans = []
         self.created = []
         self.rescan_error = None
 
-    def rescan(self, meeting_id):
+    def rescan(self, meeting_id, *, context=""):
         if self.rescan_error is not None:
             raise self.rescan_error
         self.rescans.append(meeting_id)
+        self.scan_contexts.append(context)
 
     def create(self, task_ids):
         self.created.append(list(task_ids))
+
+    def cancel_scan(self, meeting_id):
+        self.cancelled_scans.append(meeting_id)
 
 
 class FakeOptions:
@@ -191,6 +197,7 @@ def test_scan_returns_202_and_conflict(client, ctx, mid):
     r = client.post(f"/api/meetings/{mid}/tasks/scan")
     assert r.status_code == 202 and r.json() == {"state": "running"}
     assert ctx.jobs.rescans == [mid]
+    assert ctx.jobs.scan_contexts == [""]
     ctx.jobs.rescan_error = JobBusy("x")
     r = client.post(f"/api/meetings/{mid}/tasks/scan")
     assert r.status_code == 409 and r.json() == {"detail": "O levantamento já está rodando"}
@@ -198,6 +205,27 @@ def test_scan_returns_202_and_conflict(client, ctx, mid):
     r = client.post(f"/api/meetings/{mid}/tasks/scan")
     assert r.status_code == 400 and r.json() == {"detail": "O criador de issues está desligado"}
     assert client.post("/api/meetings/nao-existe/tasks/scan").status_code == 404
+
+
+def test_scan_accepts_optional_context(client, ctx, mid):
+    url = f"/api/meetings/{mid}/tasks/scan"
+    assert client.post(url, json={"context": "  Foque no checkout.\nAgrupe pagamentos.  "}).status_code == 202
+    assert ctx.jobs.scan_contexts == ["Foque no checkout.\nAgrupe pagamentos."]
+    assert client.post(url, json={}).status_code == 202
+    assert ctx.jobs.scan_contexts[-1] == ""
+    assert client.post(url, json={"context": "x" * 10_001}).status_code == 422
+    assert client.post(url, json={"context": 123}).status_code == 422
+    assert len(ctx.jobs.rescans) == 2
+
+
+def test_cancel_scan_returns_current_job_and_checks_meeting(client, ctx, mid):
+    ctx.store.set_job(mid, "tasks", "cancelled")
+    r = client.post(f"/api/meetings/{mid}/tasks/scan/cancel")
+    assert r.status_code == 200
+    assert r.json()["scan"]["state"] == "cancelled"
+    assert ctx.jobs.cancelled_scans == [mid]
+    assert client.post("/api/meetings/nada/tasks/scan/cancel").status_code == 404
+    assert ctx.jobs.cancelled_scans == [mid]
 
 
 def test_add_manual_task_defaults(client, ctx, mid):

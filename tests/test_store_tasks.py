@@ -27,7 +27,7 @@ def _item(title, **extra):
             "repeats_number": None, **extra}
 
 
-def test_migration_v2_on_existing_v1_db(tmp_path):
+def test_migrations_on_existing_v1_db(tmp_path):
     path = tmp_path / "v1.db"
     conn = sqlite3.connect(path)
     conn.executescript(store_mod._SCHEMA_V1 + "PRAGMA user_version=1;")
@@ -37,7 +37,7 @@ def test_migration_v2_on_existing_v1_db(tmp_path):
     conn.close()
     s = Store(path)
     try:
-        assert s._conn.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert s._conn.execute("PRAGMA user_version").fetchone()[0] == 5
         assert s.get_meeting("m1").title == "Antiga"
         assert s.list_tasks("m1") == [] and s.get_job("m1", "tasks") is None
     finally:

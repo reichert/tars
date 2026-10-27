@@ -27,6 +27,7 @@ function setVisibility(state: "hidden" | "visible"): void {
 
 const baseSettings: Settings = {
   dictation_enabled: true,
+  dictation_evaluation_enabled: false,
   key: "ctrl+super",
   output_key: "KEY_LEFTCTRL+KEY_LEFTSHIFT",
   paste: "shift+insert",
@@ -153,6 +154,22 @@ afterEach(() => {
 });
 
 describe("SettingsView", () => {
+  it("permite ligar e desligar a coleta de áudio para avaliação", async () => {
+    const { client } = setup();
+    const w = await open();
+    const toggle = w.get("#toggle-dictation_evaluation_enabled");
+    expect((toggle.element as HTMLInputElement).checked).toBe(false);
+    expect(w.text()).toContain("neste computador para avaliação posterior");
+
+    await toggle.setValue(true);
+    await flushPromises();
+    expect(client.putSettings).toHaveBeenLastCalledWith({ dictation_evaluation_enabled: true });
+
+    await toggle.setValue(false);
+    await flushPromises();
+    expect(client.putSettings).toHaveBeenLastCalledWith({ dictation_evaluation_enabled: false });
+  });
+
   it("oferece modelos Whisper em português e salva modelo e precisão", async () => {
     const { client } = setup();
     const w = await open("whisper");

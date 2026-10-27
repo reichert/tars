@@ -1,4 +1,6 @@
 import json
+import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -7,6 +9,7 @@ import pytest
 
 from whisper_ditado.issues.runner import StreamRun, ToolCall, kill_all, run_stream
 from whisper_ditado.claude_cli import ClaudeCli, ClaudeError
+from whisper_ditado.procs import Cancellation, ProcessCancelled, cancellation_scope, current_cancellation
 
 FAKE = str(Path(__file__).parent.parent / "fixtures" / "fake_claude.py")
 
@@ -171,3 +174,68 @@ def test_kill_all_kills_running_process(env):
     thread.join(5)
     assert not thread.is_alive() and time.monotonic() - t0 < 5
     assert box["run"].timed_out is False and box["run"].result is None
+
+
+def test_cancellation_kills_only_its_process_and_restores_scope(env):
+    scenario, log = env
+    scenario(sleep_after_calls=30)
+    cancellation = Cancellation()
+    errors = []
+    unrelated = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"], start_new_session=True)
+
+    def work():
+        try:
+            with cancellation_scope(cancellation):
+                run_stream(ClaudeCli(FAKE, None), "P", cwd=None, tools="", allowed=[], timeout_s=60)
+        except ProcessCancelled:
+            errors.append("cancelled")
+        assert current_cancellation() is None
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    try:
+        deadline = time.monotonic() + 5
+        while not log.path.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert log.path.exists()
+        cancellation.cancel()
+        thread.join(5)
+        assert not thread.is_alive()
+        assert errors == ["cancelled"]
+        assert unrelated.poll() is None
+    finally:
+        cancellation.cancel()
+        thread.join(5)
+        unrelated.terminate()
+        unrelated.wait(5)
+
+
+def test_cancel_between_process_start_and_attach_still_kills_it(env, monkeypatch):
+    from whisper_ditado.issues import runner
+
+    scenario, _ = env
+    scenario(sleep_after_calls=30)
+    cancellation = Cancellation()
+    real_popen = subprocess.Popen
+    processes = []
+
+    def popen(*args, **kwargs):
+        proc = real_popen(*args, **kwargs)
+        processes.append(proc)
+        cancellation.cancel()
+        return proc
+
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    with pytest.raises(ProcessCancelled), cancellation_scope(cancellation):
+        run_stream(ClaudeCli(FAKE, None), "P", cwd=None, tools="", allowed=[], timeout_s=60)
+    assert processes[0].poll() is not None
+    assert current_cancellation() is None
+
+
+def test_cancelled_scope_does_not_start_process(env):
+    _, log = env
+    cancellation = Cancellation()
+    cancellation.cancel()
+    with pytest.raises(ProcessCancelled), cancellation_scope(cancellation):
+        run_stream(ClaudeCli(FAKE, None), "P", cwd=None, tools="", allowed=[], timeout_s=60)
+    assert not log.path.exists()

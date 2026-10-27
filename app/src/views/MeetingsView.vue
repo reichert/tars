@@ -3,12 +3,12 @@
 import MeetingDetail from "../components/MeetingDetail.vue";
 
 defineProps<{ meetingId: string | null }>();
-const emit = defineEmits<{ deleted: [meetingId: string] }>();
+const emit = defineEmits<{ deleted: [meetingId: string]; tasksView: [active: boolean] }>();
 </script>
 
 <template>
   <div class="meetings-view">
-    <MeetingDetail v-if="meetingId" :meeting-id="meetingId" @deleted="emit('deleted', $event)" />
+    <MeetingDetail v-if="meetingId" :meeting-id="meetingId" @deleted="emit('deleted', $event)" @tasks-view="emit('tasksView', $event)" />
     <div v-else class="empty">
       <p class="empty-kicker">Reuniões de equipe</p><h1 class="empty-title">Registro e acompanhamento de reuniões</h1>
       <p>Inicie uma gravação ou selecione uma reunião para consultar a transcrição, revisar decisões e acompanhar tarefas.</p>

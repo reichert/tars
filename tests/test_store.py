@@ -30,14 +30,14 @@ def test_migrations_create_schema_and_file_is_private(tmp_path):
     path = tmp_path / "t.db"
     s = Store(path)
     assert path.stat().st_mode & 0o777 == 0o600
-    assert s._conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert s._conn.execute("PRAGMA user_version").fetchone()[0] == 5
     names = {r[0] for r in s._conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"meetings", "speakers", "segments", "summaries", "voices", "alerts",
-            "dictation_spans", "settings", "meeting_jobs", "task_suggestions"} <= names
+            "dictation_spans", "settings", "meeting_jobs", "task_suggestions", "dictation_samples"} <= names
     s.close()
     # reabrir é idempotente
     s2 = Store(path)
-    assert s2._conn.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert s2._conn.execute("PRAGMA user_version").fetchone()[0] == 5
     s2.close()
 
 

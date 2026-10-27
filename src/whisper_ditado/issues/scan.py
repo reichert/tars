@@ -99,7 +99,7 @@ def _dump(value) -> str:
 
 def build_scan_prompt(
     rules: str, transcript: str, summary: str | None, options: IssueOptions | None,
-    existing: list[TaskSuggestion],
+    existing: list[TaskSuggestion], *, context: str = "",
 ) -> str:
     if options is None:
         options_block = NO_OPTIONS_TEXT
@@ -112,9 +112,19 @@ def build_scan_prompt(
     already = _dump([
         {"titulo": t.title, "tipo": t.kind, "numero_issues_client": t.issue_number, "descartado": t.discarded}
         for t in existing
+        if t.origin != "claude" or t.edited or t.discarded or t.create_state != "none"
     ])
-    return "\n\n".join([
-        rules,
+    instructions = [rules]
+    if context.strip():
+        instructions.append(
+            "--- CONTEXTO ADICIONAL DO OPERADOR ---\n"
+            "Use as orientações abaixo para refazer as sugestões desta reunião. "
+            "Elas têm precedência sobre as regras gerais de seleção, agrupamento e redação. "
+            "Use este contexto para esclarecer a transcrição, sem inventar falas ou trechos de evidência. "
+            "Mantenha o formato de saída e use somente ids das opções disponíveis.\n"
+            f"{context.strip()}"
+        )
+    return "\n\n".join([*instructions,
         f"--- OPÇÕES DO MCP DE ISSUES (dados) ---\n{options_block}",
         f"--- JÁ LEVANTADO (não repita) ---\n{already}",
         f"--- RESUMO ---\n{summary if summary and summary.strip() else '(sem resumo)'}",
@@ -271,13 +281,14 @@ def parse_scan(
 def run_scan(
     cli: ClaudeCli, root: Path, rules: str, transcript: str, summary: str | None,
     options: IssueOptions | None, existing: list[TaskSuggestion], segments: list[Segment],
+    *, context: str = "",
 ) -> list[ScanItem]:
     root = Path(root)
     if not root.is_dir():
         raise ClaudeError(f"Pasta raiz não encontrada: {root}")
     if len(transcript) > TRANSCRIPT_MAX_CHARS:
         raise ClaudeError("A transcrição é longa demais para o levantamento (mais de 300 mil caracteres)")
-    prompt = build_scan_prompt(rules, transcript, summary, options, existing)
+    prompt = build_scan_prompt(rules, transcript, summary, options, existing, context=context)
     run = run_stream(
         cli, prompt, cwd=root, tools="Read,Grep,Glob", allowed=["Read", "Grep", "Glob"],
         settings=SCAN_SETTINGS, system_append=SCAN_SYSTEM, timeout_s=SCAN_TIMEOUT_S,

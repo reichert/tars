@@ -45,6 +45,7 @@ const emit = defineEmits<{
   deleted: [meetingId: string];
   /** Mudou algo na reunião (resumo, nomes, falantes...): o pai pode recarregar. */
   changed: [meetingId: string];
+  tasksView: [active: boolean];
 }>();
 
 const { client, events, connected, alerts: liveAlerts, levels } = useStatus();
@@ -85,12 +86,30 @@ function errorText(e: unknown): string {
 const stage = ref<ProgressStage | null>(null);
 type MeetingTab = "transcript" | "summary" | "tasks";
 const tab = ref<MeetingTab>("transcript");
+const previousTab = ref<"transcript" | "summary">("transcript");
+const tasksActive = computed(() => tab.value === "tasks" && meeting.value?.status === "ready");
+const tasksBack = ref<HTMLButtonElement | null>(null);
+function openTasks(): void {
+  if (tab.value !== "tasks") previousTab.value = tab.value;
+  menuOpen.value = false;
+  speakerMenu.value = null;
+  tab.value = "tasks";
+}
+function closeTasks(): void {
+  tab.value = previousTab.value;
+}
+watch(tasksActive, (active, previous) => {
+  emit("tasksView", active);
+  void nextTick(() => {
+    if (active) tasksBack.value?.focus();
+    else if (previous) document.getElementById("open-tasks")?.focus();
+  });
+});
 const tabMemory = inject<Map<string, string>>("meeting-tabs", new Map());
 let didChooseTab = false;
 const detailTabs: { id: MeetingTab; label: string }[] = [
   { id: "summary", label: "Resumo" },
   { id: "transcript", label: "Transcrição" },
-  { id: "tasks", label: "Tarefas" },
 ];
 function onTabKey(event: KeyboardEvent, index: number) {
   let next = index;
@@ -121,6 +140,7 @@ async function load(): Promise<void> {
     meeting.value = result;
     if (!didChooseTab) {
       didChooseTab = true;
+      previousTab.value = result.summary ? "summary" : "transcript";
       tab.value =
         (tabMemory.get(props.meetingId) as MeetingTab) ??
         (result.summary ? "summary" : "transcript");
@@ -367,8 +387,10 @@ function remove(): Promise<void> {
 
 const audioUrl = ref<string | null>(null);
 const audioEl = ref<HTMLAudioElement | null>(null);
+let audioSeq = 0;
 
 function stopAudio(): void {
+  ++audioSeq;
   audioEl.value?.pause?.();
   if (audioUrl.value) URL.revokeObjectURL(audioUrl.value);
   audioUrl.value = null;
@@ -378,8 +400,9 @@ function stopAudio(): void {
 function playAudio(start?: number, end?: number): Promise<void> {
   return run("audio", async () => {
     const id = props.meetingId;
+    const seq = ++audioSeq;
     const blob = await client.audioBlob(id, start, end);
-    if (id !== props.meetingId) return; // trocou de reunião enquanto baixava: descarta
+    if (id !== props.meetingId || seq !== audioSeq) return;
     const previous = audioUrl.value;
     audioUrl.value = URL.createObjectURL(blob);
     if (previous) URL.revokeObjectURL(previous);
@@ -410,6 +433,7 @@ watch(
     suggesting.value = false;
     tab.value = "transcript";
     tasksOpenedFor.value = null;
+    previousTab.value = "transcript";
     stopAudio();
     void load();
   },
@@ -417,6 +441,7 @@ watch(
 );
 
 onBeforeUnmount(() => {
+  emit("tasksView", false);
   offUpdated();
   offProgress();
   offJob();
@@ -426,7 +451,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <section class="detail">
+  <section class="detail" :class="{ 'tasks-page': tasksActive }">
     <p v-if="loadError && !meeting" class="state error" role="alert">
       {{ loadError }}
       <button class="btn" type="button" @click="load">Tentar de novo</button>
@@ -437,7 +462,7 @@ onBeforeUnmount(() => {
       Carregando reunião…
     </div>
     <template v-else>
-      <header class="head">
+      <header v-show="!tasksActive" class="head">
         <div class="context-label">
           Reunião
           <span v-if="meeting.status === 'ready'" class="ready"
@@ -664,22 +689,36 @@ onBeforeUnmount(() => {
         </button>
       </div>
       <template v-else>
-        <div class="tabs" role="tablist" aria-label="Conteúdo da reunião">
-          <button
-            v-for="(item, index) in detailTabs"
-            :id="`tab-${item.id}`"
-            :key="item.id"
-            type="button"
-            role="tab"
-            class="tab"
-            :class="{ on: tab === item.id }"
-            :aria-selected="tab === item.id"
-            :aria-controls="`panel-${item.id}`"
-            :tabindex="tab === item.id ? 0 : -1"
-            @click="tab = item.id"
-            @keydown="onTabKey($event, index)"
-          >
-            {{ item.label }}
+        <header v-show="tasksActive" class="tasks-head">
+          <button ref="tasksBack" type="button" class="btn ghost" @click="closeTasks">
+            <AppIcon name="arrow" :size="18" />Voltar à reunião
+          </button>
+          <div class="tasks-heading">
+            <h1 id="tasks-heading">Tarefas</h1>
+            <p>{{ title }}</p>
+          </div>
+        </header>
+        <div v-show="!tasksActive" class="tabs-row">
+          <div class="tabs" role="tablist" aria-label="Conteúdo da reunião">
+            <button
+              v-for="(item, index) in detailTabs"
+              :id="`tab-${item.id}`"
+              :key="item.id"
+              type="button"
+              role="tab"
+              class="tab"
+              :class="{ on: tab === item.id }"
+              :aria-selected="tab === item.id"
+              :aria-controls="`panel-${item.id}`"
+              :tabindex="tab === item.id ? 0 : -1"
+              @click="tab = item.id"
+              @keydown="onTabKey($event, index)"
+            >
+              {{ item.label }}
+            </button>
+          </div>
+          <button id="open-tasks" type="button" class="btn ghost tasks-link" @click="openTasks">
+            <AppIcon name="file" :size="16" />Tarefas<AppIcon name="chevron" :size="16" />
           </button>
         </div>
         <div v-if="tab !== 'tasks'" class="actions">
@@ -766,8 +805,8 @@ onBeforeUnmount(() => {
           <div
             v-show="tab === 'tasks'"
             id="panel-tasks"
-            role="tabpanel"
-            aria-labelledby="tab-tasks"
+            role="region"
+            aria-labelledby="tasks-heading"
             class="tab-panel"
             tabindex="0"
           >
@@ -795,10 +834,13 @@ onBeforeUnmount(() => {
       <SpeakerMenu
         v-if="speakerMenu"
         :key="speakerMenu.speaker.id"
+        :meeting-id="meeting.id"
+        :segments="meeting.segments"
         :speaker="speakerMenu.speaker"
         :speakers="meeting.speakers"
         :x="speakerMenu.x"
         :y="speakerMenu.y"
+        @preview="stopAudio"
         @changed="onPeopleChanged"
         @close="speakerMenu = null"
       />
@@ -848,6 +890,41 @@ onBeforeUnmount(() => {
 }
 .head {
   padding: 28px var(--page-gutter) 18px;
+}
+.tasks-head {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px 24px;
+  padding: 16px var(--page-gutter);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tasks-heading {
+  min-width: 0;
+  flex: 1;
+}
+.tasks-heading h1 {
+  font-size: var(--font-h2);
+}
+.tasks-heading p {
+  margin: 4px 0 0;
+  color: var(--muted);
+  font-size: var(--font-meta);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.tabs-row {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 0 var(--page-gutter);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.tasks-link {
+  margin-left: auto;
 }
 .context-label {
   display: flex;
@@ -998,8 +1075,6 @@ h1 {
   display: flex;
   flex-shrink: 0;
   gap: 28px;
-  padding: 0 var(--page-gutter);
-  border-bottom: 1px solid var(--border);
 }
 .tab {
   padding: 14px 0;

@@ -17,7 +17,8 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, is_dataclass
+from datetime import datetime
 
 import evdev
 import numpy as np
@@ -25,6 +26,7 @@ from evdev import ecodes
 
 from whisper_ditado.audio.capture import build_command
 from whisper_ditado.events import EventBus
+from whisper_ditado.dictation_samples import DictationSamples
 from whisper_ditado.feedback import play_start_sound
 from whisper_ditado.hotkey import Action, HotkeyState, parse_hotkey
 from whisper_ditado.paste import paste
@@ -127,6 +129,7 @@ class _Config:
     trailing_space: bool
     ignore_devices: tuple[str, ...]
     ydotool: str
+    evaluation_enabled: bool
 
 
 class DictationService:
@@ -144,10 +147,12 @@ class DictationService:
         list_devices: Callable[[], list[str]] = evdev.list_devices,
         open_device: Callable[[str], evdev.InputDevice] = evdev.InputDevice,
         dictation_busy: DictationBusy | None = None,
+        samples: DictationSamples | None = None,
     ) -> None:
         self.settings = settings
         self.transcriber = transcriber
         self.bus = bus
+        self.samples = samples
         # Recebe (início, fim) em tempo monotônico quando uma gravação válida termina.
         self.on_span = on_span
         self._recorder_factory = recorder_factory
@@ -175,6 +180,8 @@ class DictationService:
         self.loop: asyncio.AbstractEventLoop | None = None
         self._stop = asyncio.Event()
         self._rec_started = 0.0
+        self._rec_created_at: str | None = None
+        self._collect_current = False
 
         self._reload_lock = threading.Lock()
         self._wanted_opts = getattr(transcriber, "opts", None)
@@ -216,6 +223,7 @@ class DictationService:
             trailing_space=bool(s.get("trailing_space")),
             ignore_devices=tuple(n for n in s.get("ignore_devices") if n.strip()),
             ydotool=s.get("ydotool"),
+            evaluation_enabled=bool(s.get("dictation_evaluation_enabled")),
         )
 
     def apply_settings(self) -> None:
@@ -450,6 +458,8 @@ class DictationService:
         active_hotkey.recording = True
         self.busy.enter()
         self._rec_started = time.monotonic()
+        self._rec_created_at = datetime.now().astimezone().isoformat()
+        self._collect_current = self.cfg.evaluation_enabled
         self.max_timer = self.loop.call_later(self.cfg.max_sec, self._finish)
         self._set_active(True)
         play_start_sound(source)
@@ -498,7 +508,11 @@ class DictationService:
                 except Exception:
                     log.exception("Falha no callback de trecho ditado")
             try:
-                job = self.worker.submit(self._transcribe_and_paste, audio)
+                job = self.worker.submit(
+                    self._transcribe_and_paste, audio,
+                    evaluation_enabled=self._collect_current and self.cfg.evaluation_enabled,
+                    created_at=self._rec_created_at,
+                )
             except RuntimeError:  # worker já encerrado (desligando)
                 return
             delivered = True
@@ -521,10 +535,20 @@ class DictationService:
             except RuntimeError:  # loop fechado
                 return
 
-    def _transcribe_and_paste(self, audio: np.ndarray) -> None:
+    def _transcribe_and_paste(self, audio: np.ndarray, *, evaluation_enabled: bool | None = None,
+                              created_at: str | None = None) -> None:
         started = time.perf_counter()
+        transcriber = self.transcriber
+        collect = self.cfg.evaluation_enabled if evaluation_enabled is None else evaluation_enabled
+        text, pasted, error = "", False, None
+        raw_transcript = None
         try:
-            text = self.transcriber.transcribe_text(audio)
+            transcribe_result = getattr(transcriber, "transcribe_text_result", None)
+            if collect and callable(transcribe_result):
+                result = transcribe_result(audio)
+                text, raw_transcript = result.text, result.raw_text
+            else:
+                text = transcriber.transcribe_text(audio)
             if not text:
                 log.info("Nenhuma fala reconhecida")
                 return
@@ -533,6 +557,7 @@ class DictationService:
                 return
             cfg = self.cfg  # configurações vigentes na hora de colar
             self._paste(text + " " if cfg.trailing_space else text, cfg.paste, cfg.ydotool)
+            pasted = True
             log.info(
                 "%.1fs de áudio -> %d caracteres em %.2fs",
                 len(audio) / SAMPLE_RATE,
@@ -540,6 +565,23 @@ class DictationService:
                 time.perf_counter() - started,
             )
             log.debug("Texto: %s", text)
-        except Exception:
+        except Exception as exc:
+            error = str(exc)
             log.exception("Falha ao transcrever/colar")
             notify("Falha no ditado. Veja: journalctl --user -u whisper-ditado")
+        finally:
+            if collect and self.samples is not None:
+                try:
+                    opts = getattr(transcriber, "opts", None)
+                    vocab = getattr(transcriber, "vocab", None)
+                    self.samples.capture(
+                        audio, transcript=text, raw_transcript=raw_transcript,
+                        pasted=pasted, error=error, created_at=created_at,
+                        config={
+                            "transcriber": asdict(opts) if is_dataclass(opts) else {},
+                            "hotwords": getattr(vocab, "hotwords", None),
+                            "substitutions": dict(getattr(vocab, "subs", {})),
+                        },
+                    )
+                except Exception:
+                    log.exception("Falha ao enfileirar exemplo de ditado")

@@ -38,6 +38,7 @@ from whisper_ditado.issues.client import IssueClient, OptionsCache
 from whisper_ditado.claude_cli import ClaudeCli, sync_summary_cli
 from whisper_ditado.claude_models import ClaudeModels
 from whisper_ditado.events import EventBus
+from whisper_ditado.dictation_samples import DictationSamples
 from whisper_ditado.meeting.diarize import Diarizer
 from whisper_ditado.meeting.session import MeetingManager
 from whisper_ditado.priority import DictationBusy
@@ -188,9 +189,10 @@ async def serve(args: argparse.Namespace) -> int:
     # `on_span` passa time.monotonic(), o mesmo relógio padrão do MeetingManager.
     meetings = MeetingManager(store, settings, bus, meeting_transcriber, diarizer, title_fn,
                               gpu_gate=gate, on_ready=jobs.on_ready)
+    samples = DictationSamples(store)
     if not args.no_dictation:
         service = dictation.DictationService(settings, transcriber, bus, on_span=meetings.register_dictation_span,
-                                             dictation_busy=busy)
+                                             dictation_busy=busy, samples=samples)
         # O serviço é o dono do modelo: a coroutine não deve reter a primeira instância
         # depois que o usuário escolher outro Whisper nas configurações.
         del transcriber
@@ -268,6 +270,7 @@ async def serve(args: argparse.Namespace) -> int:
             with contextlib.suppress(Exception):
                 await dictation_task
         jobs.shutdown()  # mata os `claude` do resumo/levantamento/criação; as threads são daemon
+        await loop.run_in_executor(None, samples.shutdown)
         store.close()
 
 

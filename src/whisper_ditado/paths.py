@@ -23,6 +23,13 @@ def db_path() -> Path:
     return data_dir() / "ditado.db"
 
 
+def dictation_samples_dir() -> Path:
+    """Áudios originais de ditados, criados somente com a coleta ligada."""
+    d = data_dir() / "dictation-samples"
+    d.mkdir(mode=0o700, parents=True, exist_ok=True)
+    return d
+
+
 def api_info_path() -> Path:
     return data_dir() / "api.json"
 

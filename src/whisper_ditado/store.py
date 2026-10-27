@@ -101,7 +101,7 @@ _SCHEMA_V2 = """
 CREATE TABLE meeting_jobs (
     meeting_id TEXT NOT NULL REFERENCES meetings(id) ON DELETE CASCADE,
     kind TEXT NOT NULL,              -- summary | tasks
-    state TEXT NOT NULL,             -- running | done | error
+    state TEXT NOT NULL,             -- running | done | error | cancelled
     error TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (meeting_id, kind)
@@ -123,8 +123,27 @@ CREATE TABLE task_suggestions (
 CREATE INDEX task_suggestions_meeting ON task_suggestions(meeting_id, position);
 """
 
+_SCHEMA_V4 = """
+CREATE TABLE dictation_samples (
+    id TEXT PRIMARY KEY,
+    created_at TEXT NOT NULL,
+    duration_s REAL NOT NULL,
+    transcript TEXT NOT NULL,
+    pasted INTEGER NOT NULL,
+    error TEXT,
+    config_json TEXT NOT NULL,
+    evaluation_json TEXT,
+    evaluated_at TEXT
+);
+CREATE INDEX dictation_samples_created ON dictation_samples(created_at);
+"""
+
 # Índice = versão destino (`PRAGMA user_version` após aplicar).
-_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, migration_sql]
+_SCHEMA_V5 = """
+ALTER TABLE dictation_samples ADD COLUMN raw_transcript TEXT;
+ALTER TABLE dictation_samples ADD COLUMN review_json TEXT;
+"""
+_MIGRATIONS = [_SCHEMA_V1, _SCHEMA_V2, migration_sql, _SCHEMA_V4, _SCHEMA_V5]
 
 
 @dataclass
@@ -887,6 +906,65 @@ class Store:
                 "UPDATE meeting_jobs SET state='error', error=?, updated_at=?"
                 " WHERE state='running'",
                 (_RESTART_JOB_ERROR, now),
+            )
+
+    # -- exemplos de ditado para avaliação -------------------------------
+
+    def add_dictation_sample(self, sample_id: str, *, created_at: str, duration_s: float,
+                             transcript: str, pasted: bool, error: str | None, config: dict,
+                             raw_transcript: str | None = None) -> None:
+        with self._tx() as c:
+            c.execute(
+                "INSERT INTO dictation_samples"
+                "(id,created_at,duration_s,transcript,pasted,error,config_json,raw_transcript)"
+                " VALUES (?,?,?,?,?,?,?,?)",
+                (sample_id, created_at, duration_s, transcript, int(pasted), error,
+                 json.dumps(config, ensure_ascii=False), raw_transcript),
+            )
+
+    def list_dictation_samples(self, *, pending_only: bool = False,
+                              limit: int | None = None) -> list[dict]:
+        sql = "SELECT * FROM dictation_samples"
+        if pending_only:
+            sql += " WHERE evaluation_json IS NULL AND review_json IS NULL"
+        sql += " ORDER BY created_at, id"
+        params = []
+        if limit is not None:
+            sql += " LIMIT ?"
+            params.append(limit)
+        with self._lock:
+            rows = self._conn.execute(sql, params).fetchall()
+        return [self._dictation_sample(row) for row in rows]
+
+    @staticmethod
+    def _dictation_sample(row) -> dict:
+        item = dict(row)
+        item["pasted"] = bool(item["pasted"])
+        item["config"] = json.loads(item.pop("config_json"))
+        for field in ("evaluation", "review"):
+            value = item.pop(f"{field}_json")
+            item[field] = json.loads(value) if value else None
+        return item
+
+    def get_dictation_sample(self, sample_id: str) -> dict | None:
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM dictation_samples WHERE id=?",
+                                     (sample_id,)).fetchone()
+        return self._dictation_sample(row) if row is not None else None
+
+    def set_dictation_review(self, sample_id: str, review: dict) -> None:
+        """Preserva a avaliação da IA e os dados originais da captura."""
+        with self._tx() as c:
+            changed = c.execute("UPDATE dictation_samples SET review_json=? WHERE id=?",
+                                (json.dumps(review, ensure_ascii=False), sample_id))
+            if not changed.rowcount:
+                raise KeyError(sample_id)
+
+    def set_dictation_evaluation(self, sample_id: str, evaluation: dict) -> None:
+        with self._tx() as c:
+            c.execute(
+                "UPDATE dictation_samples SET evaluation_json=?, evaluated_at=? WHERE id=?",
+                (json.dumps(evaluation, ensure_ascii=False), datetime.now().isoformat(), sample_id),
             )
 
     # -- configurações --------------------------------------------------

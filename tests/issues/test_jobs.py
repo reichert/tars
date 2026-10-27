@@ -120,9 +120,9 @@ class Rig:
         self.jobs = PostMeetingJobs(store, settings, self.bus, self.claude, self.issues_client, self.options,
                                 self.tasks_claude)
 
-    def _run_scan(self, cli, root, rules, transcript, summary, options, existing, segments):
+    def _run_scan(self, cli, root, rules, transcript, summary, options, existing, segments, *, context=""):
         self.scans.append({"cli": cli, "root": root, "rules": rules, "transcript": transcript,
-                           "summary": summary, "options": options, "existing": existing,
+                           "summary": summary, "options": options, "existing": existing, "context": context,
                            "bin": cli.bin_path, "model": cli.model, "effort": cli.effort})
         if self.on_scan is not None:
             self.on_scan()
@@ -395,6 +395,109 @@ def test_rescan_uses_existing_summary_and_replaces_only_untouched(rig, store, se
     titles = [t.title for t in store.list_tasks(mid)]
     assert "Velha" not in titles and "Editada 2" in titles and "Nova" in titles
     assert stale.id not in [t.id for t in store.list_tasks(mid)]
+
+
+def test_rescan_context_is_passed_to_worker_for_this_run_only(rig, settings, mid):
+    settings.update({"issues_enabled": True})
+    rig.jobs.rescan(mid, context="Priorize as pendências do checkout.")
+    rig.wait_idle()
+    assert rig.scans[0]["context"] == "Priorize as pendências do checkout."
+    assert rig.store.get_job(mid, "tasks").state == "done"
+    rig.jobs.rescan(mid)
+    rig.wait_idle()
+    assert rig.scans[1]["context"] == ""
+    assert rig.store.get_job(mid, "tasks").state == "done"
+
+
+def test_cancel_queued_scan_does_not_call_claude_or_replace_tasks(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    old = store.add_task(mid, {"title": "Sugestão anterior"}, origin="claude")
+    release, entered = threading.Event(), threading.Event()
+
+    def block():
+        entered.set()
+        release.wait(10)
+
+    rig.jobs._claude_worker.submit(block, gated=False)
+    assert entered.wait(5)
+    try:
+        rig.jobs.rescan(mid)
+        rig.jobs.cancel_scan(mid)
+        rig.jobs.cancel_scan(mid)  # segundo clique não muda o estado
+        assert store.get_job(mid, "tasks").state == "cancelled"
+    finally:
+        release.set()
+        rig.wait_idle()
+    assert rig.scans == [] and rig.options.calls == 0
+    assert [t.id for t in store.list_tasks(mid)] == [old.id]
+    assert rig.events("meeting_job") == [job_event(mid, "tasks", "running"),
+                                        job_event(mid, "tasks", "cancelled")]
+
+
+@pytest.mark.parametrize("late_error", [None, ClaudeError("Erro tardio")])
+def test_cancel_running_scan_preserves_tasks_and_allows_new_scan(rig, store, settings, mid, late_error):
+    settings.update({"issues_enabled": True})
+    old = store.add_task(mid, {"title": "Sugestão anterior"}, origin="claude")
+    entered, release = threading.Event(), threading.Event()
+
+    def block_first():
+        if len(rig.scans) == 1:
+            entered.set()
+            release.wait(10)
+            if late_error:
+                raise late_error
+
+    rig.on_scan = block_first
+    rig.jobs.rescan(mid)
+    assert entered.wait(5)
+    try:
+        rig.jobs.cancel_scan(mid)
+        assert store.get_job(mid, "tasks").state == "cancelled"
+        assert [t.id for t in store.list_tasks(mid)] == [old.id]
+        rig.jobs.rescan(mid, context="Novo contexto")
+        assert store.get_job(mid, "tasks").state == "running"
+    finally:
+        release.set()
+        rig.wait_idle()
+    assert len(rig.scans) == 2 and rig.scans[1]["context"] == "Novo contexto"
+    assert store.get_job(mid, "tasks").state == "done"
+    assert len(rig.events("tasks_changed")) == 1
+    assert rig.events("meeting_job") == [
+        job_event(mid, "tasks", "running"), job_event(mid, "tasks", "cancelled"),
+        job_event(mid, "tasks", "running"), job_event(mid, "tasks", "done"),
+    ]
+
+
+def test_cancel_auto_scan_during_options_fetch_does_not_start_scan(rig, store, settings, mid):
+    settings.update({"issues_enabled": True})
+    entered, release = threading.Event(), threading.Event()
+
+    def options():
+        entered.set()
+        release.wait(10)
+        return OPTS
+
+    rig.options.get = options
+    rig.jobs.on_ready(mid)
+    assert entered.wait(5)
+    try:
+        rig.jobs.cancel_scan(mid)
+    finally:
+        release.set()
+        rig.wait_idle()
+    assert store.get_job(mid, "tasks").state == "cancelled"
+    assert store.get_job(mid, "summary").state == "done"
+    assert rig.scans == []
+
+
+def test_cancel_finished_or_missing_scan_is_noop(rig, store, settings, mid):
+    rig.jobs.cancel_scan(mid)
+    assert store.get_job(mid, "tasks") is None
+    settings.update({"issues_enabled": True})
+    rig.jobs.rescan(mid)
+    rig.wait_idle()
+    rig.jobs.cancel_scan(mid)
+    assert store.get_job(mid, "tasks").state == "done"
 
 
 def test_scan_of_deleted_meeting_is_silent(rig, store, settings, mid):
