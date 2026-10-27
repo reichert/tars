@@ -91,6 +91,31 @@ def test_prompt_keeps_unicode_readable():
     assert "João" in p and "\\u" not in p
 
 
+def test_prompt_uses_operator_context_separately_from_transcript():
+    p = build_scan_prompt("REGRAS", "TRANSCRIÇÃO", None, None, [],
+                          context="  Foque no checkout.\nAgrupe pagamentos.  ")
+    assert "--- CONTEXTO ADICIONAL DO OPERADOR ---" in p
+    assert "Foque no checkout.\nAgrupe pagamentos." in p
+    assert p.index("REGRAS") < p.index("CONTEXTO ADICIONAL") < p.index("--- TRANSCRIÇÃO")
+    assert "precedência sobre as regras gerais" in p
+    assert "CONTEXTO ADICIONAL" not in build_scan_prompt("R", "T", None, None, [], context=" \n ")
+
+
+def test_prompt_excludes_suggestions_being_replaced_and_preserves_reviewed_items():
+    existing = [
+        created_task(title="Refazer esta", create_state="none"),
+        created_task(title="Manual", create_state="none", origin="manual"),
+        created_task(title="Editada", create_state="none", edited=True),
+        created_task(title="Descartada", create_state="none", discarded=True),
+        *[created_task(title=state, create_state=state)
+          for state in ("creating", "created", "uncertain", "failed")],
+    ]
+    p = build_scan_prompt("R", "T", None, None, existing, context="Refaça o agrupamento.")
+    assert "Refazer esta" not in p
+    for title in ("Manual", "Editada", "Descartada", "creating", "created", "uncertain", "failed"):
+        assert f'"titulo": "{title}"' in p
+
+
 # ----- parse -----
 
 
@@ -161,6 +186,18 @@ def test_default_prompt_groups_requests_by_area():
     assert "nunca agrupe por cliente" in DEFAULT_TASKS_PROMPT
     assert "Uma issue por item" not in DEFAULT_TASKS_PROMPT
     assert "de 1 a 5 trechos" in DEFAULT_TASKS_PROMPT
+
+
+def test_default_scan_instructions_use_sdd(env, tmp_path):
+    from whisper_ditado.issues.prompts import DEFAULT_TASKS_PROMPT
+
+    env(final="[]")
+    run_scan(ClaudeCli(FAKE, None), tmp_path, DEFAULT_TASKS_PROMPT, "T", None, OPTS, [], [])
+    prompt = env.log()["stdin"]
+    assert "Spec Driven Development (SDD)" in prompt
+    for heading in ("## Especificação", "## Critérios de aceite", "## Plano de implementação", "## Validação"):
+        assert heading in prompt
+    assert "Não preencha lacunas por suposição" in prompt
 
 
 def test_parse_tolerates_text_around_json():
@@ -329,6 +366,13 @@ def test_run_scan_passes_created_numbers(env, tmp_path):
     existing = [created_task(issue_number=217), created_task(issue_number=None, create_state="none")]
     items = run_scan(ClaudeCli(FAKE, None), tmp_path, "R", "T", None, OPTS, existing, [])
     assert [i.repeats_number for i in items] == [217, None]
+
+
+def test_run_scan_sends_operator_context_to_claude(env, tmp_path):
+    env(final="[]")
+    run_scan(ClaudeCli(FAKE, None), tmp_path, "R", "T", None, OPTS, [], [],
+             context="Foque nas pendências de pagamento.")
+    assert "Foque nas pendências de pagamento." in env.log()["stdin"]
 
 
 def test_run_scan_rejects_missing_root(tmp_path):

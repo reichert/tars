@@ -148,7 +148,7 @@ async function testConnection(): Promise<void> {
 
     <SettingField
       label="Prompt do levantamento"
-      hint="Adapte as regras aos seus projetos e ao seu MCP. O resultado será revisado antes de criar qualquer issue."
+      hint="O padrão usa Spec Driven Development (SDD): especificação, critérios de aceite, plano e validação. Adapte as regras aos seus projetos; as sugestões serão revisadas antes da criação."
       for="issues-prompt"
       :error="form.errors.tasks_prompt"
     >

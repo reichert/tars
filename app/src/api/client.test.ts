@@ -10,6 +10,15 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 describe("client", () => {
+  it("pede o trecho da trilha selecionada com autenticação", async () => {
+    const fetchFn = vi.fn(async () => new Response(new Blob(["audio"])));
+    const client = createClient(async () => ({ port: 5, token: "tok" }), fetchFn);
+    await client.audioBlob("m1", 31, 41, "pc");
+    const [url, init] = fetchFn.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe("http://127.0.0.1:5/api/meetings/m1/audio?start=31&end=41&source=pc");
+    expect(new Headers(init.headers).get("Authorization")).toBe("Bearer tok");
+  });
+
   it("client sends bearer token and parses json", async () => {
     const fetchFn = vi.fn(async () =>
       jsonResponse([{ id: "m1", title: "Daily", started_at: "2026-10-19T10:00:00",
@@ -83,6 +92,12 @@ describe("client", () => {
       r = await call((c) => c.scanTasks("m1"), { state: "running" });
       expect([r.init.method, r.url, r.init.body]).toEqual(["POST", "/meetings/m1/tasks/scan", undefined]);
       expect(r.result).toEqual({ state: "running" });
+      r = await call((c) => c.scanTasks("m1", "  Foque no checkout.  "), { state: "running" });
+      expect([r.init.method, r.url, JSON.parse(r.init.body as string)]).toEqual([
+        "POST", "/meetings/m1/tasks/scan", { context: "Foque no checkout." },
+      ]);
+      r = await call((c) => c.scanTasks("m1", " \n "));
+      expect(r.init.body).toBeUndefined();
     });
 
     it("addTask e updateTask", async () => {
@@ -92,6 +107,15 @@ describe("client", () => {
       expect([r.init.method, r.url, r.init.body]).toEqual([
         "PATCH", "/tasks/t1", '{"discarded":true,"title":"Y"}',
       ]);
+    });
+
+    it("cancelTasksScan cancela somente o levantamento da reunião indicada", async () => {
+      const scan = { state: "cancelled", error: null, updated_at: "x" };
+      const r = await call((c) => c.cancelTasksScan("m/1"), { scan });
+      expect([r.init.method, r.url, r.init.body]).toEqual([
+        "POST", "/meetings/m%2F1/tasks/scan/cancel", undefined,
+      ]);
+      expect(r.result).toEqual({ scan });
     });
 
     it("createTasks e resolveTask", async () => {

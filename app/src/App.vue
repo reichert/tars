@@ -13,6 +13,7 @@ type Route = "meetings" | "settings";
 const route = ref<Route>("meetings");
 const selectedId = ref<string | null>(null);
 const libraryOpen = ref(false);
+const tasksFocused = ref(false);
 const section = ref("dictation");
 const viewport = window.matchMedia?.("(max-width: 1023px)");
 const compact = ref(viewport?.matches ?? false);
@@ -36,6 +37,7 @@ onBeforeUnmount(() => {
   window.removeEventListener("beforeunload", beforeUnload);
 });
 function openMeeting(id: string): void {
+  tasksFocused.value = false;
   selectedId.value = id;
   route.value = "meetings";
   libraryOpen.value = false;
@@ -81,10 +83,11 @@ const dictationLabel = computed(() => {
     :class="{
       'settings-route': route === 'settings',
       'library-open': libraryOpen,
+      'tasks-route': route === 'meetings' && tasksFocused,
     }"
   >
     <a class="skip-link" href="#main-content">Ir para o conteúdo</a>
-    <header v-show="route === 'settings' || compact" class="appbar">
+    <header v-show="route === 'settings' || (compact && !tasksFocused)" class="appbar">
       <button
         type="button"
         class="btn ghost"
@@ -107,7 +110,7 @@ const dictationLabel = computed(() => {
     </header>
     <div class="workspace">
       <aside
-        v-show="route === 'meetings'"
+        v-show="route === 'meetings' && !tasksFocused"
         class="sidebar"
         aria-label="Biblioteca de reuniões"
       >
@@ -168,6 +171,7 @@ const dictationLabel = computed(() => {
             v-if="route === 'meetings'"
             :meeting-id="selectedId"
             @deleted="onDeleted"
+            @tasks-view="tasksFocused = $event; libraryOpen = false"
           />
           <SettingsView
             v-else

@@ -34,6 +34,7 @@ DEFAULT_SUMMARY_PROMPT = (
 
 DEFAULTS: dict[str, Any] = {
     "dictation_enabled": True,
+    "dictation_evaluation_enabled": False,
     "key": "ctrl+super",
     "output_key": "KEY_LEFTCTRL+KEY_LEFTSHIFT",
     "paste": "shift+insert",

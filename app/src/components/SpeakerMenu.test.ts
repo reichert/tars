@@ -26,7 +26,7 @@ function mountMenu(overrides: Record<string, unknown> = {}) {
     enrollSpeaker: vi.fn(async () => voices[0]),
     ...overrides,
   });
-  const w = mount(SpeakerMenu, { props: { speaker: speakers[1], speakers, x: 10, y: 20 } });
+  const w = mount(SpeakerMenu, { props: { meetingId: "m1", segments: [], speaker: speakers[1], speakers, x: 10, y: 20 } });
   const btn = (label: string) => w.findAll("button").find((b) => b.text().includes(label))!;
   return { w, btn, ...ctx };
 }

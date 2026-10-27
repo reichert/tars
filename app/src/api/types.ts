@@ -105,6 +105,7 @@ export interface ClaudeModels {
 /** `GET /settings`: todas as chaves de `DEFAULTS`, sem `hf_token` (só `hf_token_set`). */
 export interface Settings {
   dictation_enabled: boolean;
+  dictation_evaluation_enabled: boolean;
   key: string;
   output_key: string;
   paste: string;
@@ -176,7 +177,7 @@ export type CreateState = "none" | "creating" | "created" | "uncertain" | "faile
 
 /** Tarefa em segundo plano do backend (resumo ou levantamento de tarefas). */
 export interface JobState {
-  state: "running" | "done" | "error";
+  state: "running" | "done" | "error" | "cancelled";
   error: string | null;
   updated_at: string;
 }

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { flushPromises, mount } from "@vue/test-utils";
 import App from "./App.vue";
+import MeetingsView from "./views/MeetingsView.vue";
 import { installStore } from "./test/meetingFakes";
 import { setStatusStore } from "./composables/useStatus";
 
@@ -57,5 +58,21 @@ describe("Mineral shell", () => {
     expect(ctx.client.startMeeting).toHaveBeenCalledTimes(1);
     finish({ meeting_id: "m1" });
     await flushPromises();
+  });
+  it("gives tasks the full window and restores the library on return", async () => {
+    openApp();
+    await flushPromises();
+    const control = document.querySelector(".rec");
+    const meetings = wrapper!.findComponent(MeetingsView);
+    meetings.vm.$emit('tasksView', true);
+    await flushPromises();
+    expect(wrapper!.classes()).toContain('tasks-route');
+    expect(wrapper!.get('aside').isVisible()).toBe(false);
+    expect(wrapper!.get('.appbar').isVisible()).toBe(false);
+    expect(document.querySelectorAll('.rec')).toHaveLength(1);
+    meetings.vm.$emit('tasksView', false);
+    await flushPromises();
+    expect(wrapper!.get('aside').isVisible()).toBe(true);
+    expect(document.querySelector('.rec')).toBe(control);
   });
 });

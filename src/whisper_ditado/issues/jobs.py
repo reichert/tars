@@ -22,6 +22,7 @@ from whisper_ditado.issues.client import IssueClient, IssueError, OptionsCache, 
 from whisper_ditado.issues.scan import run_scan
 from whisper_ditado.claude_cli import ClaudeCli, ClaudeError, sync_summary_cli, sync_tasks_cli, transcript_text
 from whisper_ditado.settings import Settings
+from whisper_ditado.procs import Cancellation, ProcessCancelled, cancellation_scope
 from whisper_ditado.store import Store
 from whisper_ditado.worker import SerialWorker
 
@@ -51,6 +52,7 @@ class PostMeetingJobs:
         self._issues_client = issues_client
         self._options = options
         self._claim_lock = threading.Lock()  # tira a corrida entre `rescan` e `on_ready` pelo job `tasks`
+        self._scans: dict[str, Cancellation] = {}
         self._stopping = threading.Event()
         self._claude_worker = SerialWorker("issues-claude")
         self._create_worker = SerialWorker("issues-create")
@@ -61,7 +63,7 @@ class PostMeetingJobs:
         """Chamado na thread da GPU quando a reunião fica pronta: só enfileira e volta."""
         self._claude_worker.submit(self._after_ready, meeting_id, gated=False)
 
-    def rescan(self, meeting_id: str) -> None:
+    def rescan(self, meeting_id: str, *, context: str = "") -> None:
         """Pede um novo levantamento. `ValueError` (pt-BR) se não dá para rodar; `JobBusy` se já roda."""
         if self._store.get_meeting(meeting_id) is None:
             raise ValueError("Reunião não encontrada")
@@ -72,9 +74,20 @@ class PostMeetingJobs:
             raise ValueError(f"Pasta raiz não encontrada: {root}")
         if not self._store.get_segments(meeting_id):
             raise ValueError(NO_TRANSCRIPT_SCAN)
-        if not self._claim_scan(meeting_id, only_if_new=False):
+        cancellation = self._claim_scan(meeting_id, only_if_new=False)
+        if cancellation is None:
             raise JobBusy("O levantamento já está em andamento")
-        self._claude_worker.submit(self._scan, meeting_id, gated=False)
+        self._claude_worker.submit(self._scan, meeting_id, context, cancellation, gated=False)
+
+    def cancel_scan(self, meeting_id: str) -> None:
+        """Cancela só este levantamento, inclusive se ainda estiver na fila. Idempotente."""
+        with self._claim_lock:
+            cancellation = self._scans.get(meeting_id)
+            if cancellation is None:
+                return
+            cancellation.cancel()
+            self._finish(meeting_id, "tasks", "cancelled")
+            del self._scans[meeting_id]
 
     def create(self, task_ids: list[str]) -> None:
         """Enfileira a criação dos ids (já reservados como `creating` pelo chamador)."""
@@ -95,9 +108,10 @@ class PostMeetingJobs:
                 return
             if self._settings.get("auto_summary") and not self._store.get_summary(meeting_id):
                 self._summarize(meeting_id)
-            if (self._settings.get("issues_enabled") and not self._stopping.is_set()
-                    and self._claim_scan(meeting_id, only_if_new=True)):
-                self._scan(meeting_id)
+            if self._settings.get("issues_enabled") and not self._stopping.is_set():
+                cancellation = self._claim_scan(meeting_id, only_if_new=True)
+                if cancellation is not None:
+                    self._scan(meeting_id, cancellation=cancellation)
         except Exception:
             log.exception("Falha nos trabalhos pós-reunião de %s", meeting_id)
 
@@ -126,50 +140,69 @@ class PostMeetingJobs:
 
     # -- levantamento -------------------------------------------------------------------
 
-    def _claim_scan(self, meeting_id: str, *, only_if_new: bool) -> bool:
-        """Marca o job `tasks` como `running`; False se não pode (já existe/roda, ou reunião sumiu)."""
+    def _claim_scan(self, meeting_id: str, *, only_if_new: bool) -> Cancellation | None:
+        """Reserva uma execução própria; None se o job já existe/roda, ou a reunião sumiu."""
         with self._claim_lock:
             job = self._store.get_job(meeting_id, "tasks")
             if job is not None and (only_if_new or job.state == "running"):
-                return False
+                return None
             if not self._store.set_job(meeting_id, "tasks", "running"):
-                return False
-        self._publish_job(meeting_id, "tasks", "running")
-        return True
+                return None
+            cancellation = Cancellation()
+            self._scans[meeting_id] = cancellation
+            self._publish_job(meeting_id, "tasks", "running")
+            return cancellation
 
-    def _scan(self, meeting_id: str) -> None:
+    def _scan(self, meeting_id: str, context: str = "", cancellation: Cancellation | None = None) -> None:
         """Roda o levantamento (o job `tasks` já está `running`, ver `_claim_scan`)."""
-        if self._stopping.is_set():  # o serviço está encerrando: não inicia outro `claude`
+        if self._stopping.is_set() or cancellation is None:
             return
         try:
-            root = self._root()
-            if not root.is_dir():
-                raise ClaudeError(f"Pasta raiz não encontrada: {root}")
-            segments = self._store.get_segments(meeting_id)
-            if not segments:
-                raise ClaudeError(NO_TRANSCRIPT_SCAN)
-            transcript = transcript_text(segments, self._store.get_speakers(meeting_id))
-            summary = self._store.get_summary(meeting_id) or None
-            options = None
-            sync_tasks_cli(self._tasks_claude, self._settings)  # as opções do MCP de issues também rodam o `claude`
-            try:
-                options = self._options.get()
-            except IssueError as exc:
-                log.warning("Levantamento sem as opções do MCP de issues: %s", exc)
-            existing = self._store.list_tasks(meeting_id)
-            items = run_scan(self._tasks_claude, root, self._settings.get("tasks_prompt"), transcript,
-                             summary, options, existing, segments)
-            stage = options.stage_named(STAGE_NAME) if options is not None else None
-            stage_id = stage.id if stage is not None else None
-            self._store.replace_scan_tasks(meeting_id, [i.as_store_item(stage_id) for i in items])
+            with cancellation_scope(cancellation):
+                root = self._root()
+                if not root.is_dir():
+                    raise ClaudeError(f"Pasta raiz não encontrada: {root}")
+                segments = self._store.get_segments(meeting_id)
+                if not segments:
+                    raise ClaudeError(NO_TRANSCRIPT_SCAN)
+                transcript = transcript_text(segments, self._store.get_speakers(meeting_id))
+                summary = self._store.get_summary(meeting_id) or None
+                options = None
+                sync_tasks_cli(self._tasks_claude, self._settings)
+                try:
+                    options = self._options.get()
+                except IssueError as exc:
+                    log.warning("Levantamento sem as opções do MCP de issues: %s", exc)
+                cancellation.check()
+                existing = self._store.list_tasks(meeting_id)
+                items = run_scan(self._tasks_claude, root, self._settings.get("tasks_prompt"), transcript,
+                                 summary, options, existing, segments, context=context)
+                stage = options.stage_named(STAGE_NAME) if options is not None else None
+                stage_id = stage.id if stage is not None else None
+                # Cancelar e gravar o resultado disputam o mesmo lock. Uma execução antiga
+                # nunca publica resultados nem estado por cima de um novo levantamento.
+                with self._claim_lock:
+                    cancellation.check()
+                    self._store.replace_scan_tasks(meeting_id, [i.as_store_item(stage_id) for i in items])
+                    self._finish_scan(meeting_id, cancellation, "done")
+        except ProcessCancelled:
+            pass  # cancel_scan já publicou o estado; mantém as sugestões anteriores
         except ClaudeError as exc:
-            self._finish(meeting_id, "tasks", "error", str(exc))
+            with self._claim_lock:
+                self._finish_scan(meeting_id, cancellation, "error", str(exc))
         except Exception:
-            self._finish(meeting_id, "tasks", "error", SCAN_UNEXPECTED)  # primeiro: o job nunca fica `running`
+            with self._claim_lock:
+                self._finish_scan(meeting_id, cancellation, "error", SCAN_UNEXPECTED)
             self._log_unexpected(meeting_id, "Falha no levantamento de %s")
-        else:
-            if self._finish(meeting_id, "tasks", "done"):
-                self._bus.publish({"type": "tasks_changed", "meeting_id": meeting_id})
+
+    def _finish_scan(self, meeting_id: str, cancellation: Cancellation, state: str,
+                     error: str | None = None) -> None:
+        """Chamado com _claim_lock adquirido; só a execução atual pode terminar o job."""
+        if self._scans.get(meeting_id) is not cancellation:
+            return
+        if self._finish(meeting_id, "tasks", state, error) and state == "done":
+            self._bus.publish({"type": "tasks_changed", "meeting_id": meeting_id})
+        del self._scans[meeting_id]
 
     # -- criação no MCP de issues ---------------------------------------------------------------
 

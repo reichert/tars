@@ -30,7 +30,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Body, Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket
 from fastapi.concurrency import run_in_threadpool
@@ -184,8 +184,10 @@ def _track_input(directory: Path, name: str) -> list[str] | None:
     return None
 
 
-def _ffmpeg_mix_cmd(directory: Path, start: float | None, end: float | None) -> list[str] | None:
-    inputs = [i for i in (_track_input(directory, n) for n in TRACKS) if i is not None]
+def _ffmpeg_mix_cmd(directory: Path, start: float | None, end: float | None,
+                    source: Literal["mic", "pc"] | None = None) -> list[str] | None:
+    inputs = [i for i in (_track_input(directory, n) for n in ((source,) if source else TRACKS))
+              if i is not None]
     if not inputs:
         return None
     cmd = [FFMPEG, "-nostdin", "-hide_banner", "-v", "error"]
@@ -402,13 +404,14 @@ def create_app(ctx: AppContext, token: str) -> FastAPI:
         meeting_id: str,
         start: float | None = Query(None, ge=0, allow_inf_nan=False),
         end: float | None = Query(None, ge=0, allow_inf_nan=False),
+        source: Literal["mic", "pc"] | None = None,
     ) -> StreamingResponse:
         get_meeting(meeting_id)
         if end is not None and end <= 0:
             raise HTTPException(400, "O fim do trecho deve ser maior que zero")
         if start is not None and end is not None and end <= start:
             raise HTTPException(400, "O fim do trecho deve ser maior que o início")
-        cmd = _ffmpeg_mix_cmd(paths.data_dir() / "meetings" / meeting_id, start, end)
+        cmd = _ffmpeg_mix_cmd(paths.data_dir() / "meetings" / meeting_id, start, end, source)
         if cmd is None:
             raise HTTPException(404, "Áudio da reunião não encontrado")
         return StreamingResponse(_stream_ffmpeg(cmd), media_type="audio/ogg")

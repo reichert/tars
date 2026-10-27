@@ -10,6 +10,22 @@ export function speakerName(speaker: Speaker | undefined): string {
   return speaker?.label || "Desconhecido";
 }
 
+/** Até três falas com duração suficiente para reconhecer a voz, limitadas a dez segundos. */
+export function speakerSamples(segments: Segment[], speakerId: string): Segment[] {
+  const candidates = segments
+    .filter((s) => s.speaker_id === speakerId && Number.isFinite(s.start_s)
+      && Number.isFinite(s.end_s) && s.start_s >= 0 && s.end_s > s.start_s)
+    .map((s) => ({ ...s, end_s: Math.min(s.end_s, s.start_s + 10) }))
+    .sort((a, b) => (b.end_s - b.start_s) - (a.end_s - a.start_s) || a.start_s - b.start_s);
+  const samples: Segment[] = [];
+  for (const candidate of candidates) {
+    if (samples.some((s) => s.start_s < candidate.end_s && s.end_s > candidate.start_s)) continue;
+    samples.push(candidate);
+    if (samples.length === 3) break;
+  }
+  return samples.sort((a, b) => a.start_s - b.start_s);
+}
+
 /** Corpo da transcrição no formato de `export.md` (`[mm:ss] Nome: texto`, sem cabeçalho). */
 export function transcriptText(segments: Segment[], speakers: Speaker[]): string {
   const byId = new Map(speakers.map((s) => [s.id, s]));

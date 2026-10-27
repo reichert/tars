@@ -300,6 +300,25 @@ describe("MeetingDetail", () => {
     expect(w.get("audio").attributes("src")).toBe("blob:fake");
   });
 
+  it("permite ouvir uma pessoa no menu e interrompe o áudio da reunião", async () => {
+    const audioBlob = vi.fn(async () => new Blob(["audio"], { type: "audio/ogg" }));
+    Object.assign(URL, { createObjectURL: vi.fn(() => "blob:sample"), revokeObjectURL: vi.fn() });
+    const { w } = await mountDetail(detail(), { audioBlob });
+    await w.findAll("button").find((b) => b.text().includes("Ouvir áudio"))!.trigger("click");
+    await flushPromises();
+    expect(w.find(".player").exists()).toBe(true);
+    await w.get('button[data-speaker="s2"]').trigger("click");
+    await w.get('.speaker-menu button[aria-label^="Ouvir trecho"]').trigger("click");
+    await flushPromises();
+    expect(audioBlob).toHaveBeenLastCalledWith("m1", 31, 40, "pc");
+    expect(w.find(".player").exists()).toBe(false);
+    expect(w.find(".speaker-menu audio").exists()).toBe(true);
+    expect(w.text()).toContain("Identificar como");
+    await w.get(".speaker-menu .backdrop").trigger("click");
+    expect(w.find("audio").exists()).toBe(false);
+    w.unmount();
+  });
+
   it("another action finishing does not re-enable Resumir while it runs", async () => {
     let finishSummary!: () => void;
     const summarize = vi.fn(() => new Promise<{ summary: string }>((r) => (finishSummary = () => r({ summary: "x" }))));
@@ -364,7 +383,7 @@ describe("MeetingDetail", () => {
     expect(w.text()).not.toContain("separando vozes");
   });
 
-  it("has a Tarefas tab that mounts the TasksTab", async () => {
+  it("opens tasks as a full page and returns to the previous meeting tab", async () => {
     const listTasks = vi.fn(async () => ({ enabled: false, scan: null, items: [] }));
     const issueOptions = vi.fn(async () => {
       throw new Error("desligado");
@@ -372,14 +391,24 @@ describe("MeetingDetail", () => {
     const { w } = await mountDetail(detail(), { listTasks, issueOptions });
     expect(listTasks).not.toHaveBeenCalled();
     const tabs = w.findAll('[role="tab"]').map((t) => t.text());
-    expect(tabs).toEqual(["Resumo", "Transcrição", "Tarefas"]);
-    await w.findAll('[role="tab"]')[2].trigger("click");
+    expect(tabs).toEqual(["Resumo", "Transcrição"]);
+    await w.get('#tab-summary').trigger("click");
+    await w.get('#open-tasks').trigger("click");
     await flushPromises();
     expect(listTasks).toHaveBeenCalledWith("m1");
     expect(w.text()).toContain("O criador de issues está desligado");
+    expect(w.get('.tasks-head').isVisible()).toBe(true);
+    expect(w.get('.head').isVisible()).toBe(false);
+    expect(w.get('.tabs-row').isVisible()).toBe(false);
+    expect(w.emitted('tasksView')?.slice(-1)[0]).toEqual([true]);
+    await w.get('.tasks-head button').trigger("click");
+    await flushPromises();
+    expect(w.get('#tab-summary').attributes('aria-selected')).toBe('true');
+    expect(w.get('.head').attributes('style')).not.toContain('display: none');
+    expect(w.emitted('tasksView')?.slice(-1)[0]).toEqual([false]);
   });
 
-  it("keeps the Tarefas tab mounted while the meeting is open (Desfazer survives a tab switch)", async () => {
+  it("preserves tasks and context when going back to the meeting and reopening tasks", async () => {
     const item = {
       id: "t1", meeting_id: "m1", origin: "claude" as const, position: 0, kind: "feature" as const,
       title: "Emitir NFSe em lote", description: "", project: null, product_id: null, assignee_id: null,
@@ -397,18 +426,19 @@ describe("MeetingDetail", () => {
       throw new Error("desligado");
     });
     const { w } = await mountDetail(detail(), { listTasks, updateTask, issueOptions });
-    const tabs = () => w.findAll('[role="tab"]');
-    await tabs()[2].trigger("click");
+    await w.get('#open-tasks').trigger("click");
     await flushPromises();
+    await w.get('.scan-context textarea').setValue('Priorize o checkout.');
     await w.findAll("button").find((b) => b.text() === "Descartar")!.trigger("click");
     await flushPromises();
-    await tabs().find(t => t.text() === "Transcrição")!.trigger("click");
+    await w.get('.tasks-head button').trigger("click");
     await flushPromises();
     expect(w.text()).toContain("Bom dia");
-    await tabs()[2].trigger("click");
+    await w.get('#open-tasks').trigger("click");
     await flushPromises();
     expect(w.findAll("button").some((b) => b.text() === "Desfazer")).toBe(true);
     expect(listTasks).toHaveBeenCalledTimes(1);
+    expect((w.get('.scan-context textarea').element as HTMLTextAreaElement).value).toBe('Priorize o checkout.');
   });
 
   it("switching to another meeting resets the Tarefas tab", async () => {
@@ -421,13 +451,14 @@ describe("MeetingDetail", () => {
     void ctx;
     const w = mount(MeetingDetail, { props: { meetingId: "m1" } });
     await flushPromises();
-    await w.findAll('[role="tab"]')[2].trigger("click");
+    await w.get('#open-tasks').trigger("click");
     await flushPromises();
     expect(listTasks).toHaveBeenCalledWith("m1");
     await w.setProps({ meetingId: "m2" });
     await flushPromises();
     expect(listTasks).toHaveBeenCalledTimes(1); // aba volta à Transcrição: a nova reunião não carrega tarefas
-    await w.findAll('[role="tab"]')[2].trigger("click");
+    expect(w.emitted('tasksView')?.slice(-1)[0]).toEqual([false]);
+    await w.get('#open-tasks').trigger("click");
     await flushPromises();
     expect(listTasks).toHaveBeenLastCalledWith("m2");
   });
@@ -466,7 +497,7 @@ describe("MeetingDetail", () => {
       username: "vi", people: [], teams: [], products: [], stages: [], fetched_at: "2026-10-20T10:00:00",
     }));
     const { w } = await mountDetail(detail(), { audioBlob, listTasks, issueOptions });
-    await w.findAll('[role="tab"]')[2].trigger("click");
+    await w.get('#open-tasks').trigger("click");
     await flushPromises();
     await w.get(".evidence .play").trigger("click");
     await flushPromises();

@@ -41,6 +41,12 @@ class Word:
     prob: float
 
 
+@dataclass(frozen=True)
+class TextTranscription:
+    raw_text: str
+    text: str
+
+
 class Transcriber:
     # Chamado antes de decodificar cada trecho em `transcribe_words` (o gerador do faster-whisper
     # decodifica ~30 s por `next()`); as reuniões usam para ceder a GPU ao ditado.
@@ -88,6 +94,10 @@ class Transcriber:
             log.exception("Falha ao recarregar o vocabulário")
 
     def transcribe_text(self, audio: np.ndarray) -> str:
+        return self.transcribe_text_result(audio).text
+
+    def transcribe_text_result(self, audio: np.ndarray) -> TextTranscription:
+        """Texto reconhecido e texto após as substituições, da mesma inferência."""
         self._refresh_vocab()
         text = self._transcribe(audio)
         if has_loop(text):
@@ -95,7 +105,7 @@ class Transcriber:
             # n-gramas repetidos resolve, mas distorce repetições naturais, então é só o plano B.
             log.info("Loop de repetição detectado; transcrevendo de novo")
             text = self._transcribe(audio, no_repeat_ngram_size=3) or text
-        return self.vocab.apply(text)
+        return TextTranscription(raw_text=text, text=self.vocab.apply(text))
 
     def transcribe_words(self, audio: np.ndarray, offset_s: float = 0.0) -> list[Word]:
         """Palavras com tempo absoluto (`offset_s` + posição no áudio); sem substituições."""

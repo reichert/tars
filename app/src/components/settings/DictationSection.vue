@@ -51,6 +51,13 @@ async function savePaste(e: Event): Promise<void> {
       hint="Desligado, os atalhos do microfone e do áudio do computador ficam pausados."
     />
 
+    <ToggleField
+      :form="form"
+      field="dictation_evaluation_enabled"
+      label="Avaliador de ditado"
+      hint="Guarda o áudio e a transcrição de cada ditado neste computador para avaliação posterior. A colagem continua normalmente. Desligar interrompe a coleta e mantém os exemplos já salvos."
+    />
+
     <SettingField label="Atalho do microfone" for="dict-key" hint="Ex.: ctrl+super, KEY_RIGHTCTRL, alt+KEY_SPACE." :error="form.errors.key">
       <input
         id="dict-key"

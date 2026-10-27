@@ -543,6 +543,33 @@ def test_audio_validation_and_missing(client, ctx):
     assert client.get("/api/meetings/zzz/audio").status_code == 404
 
 
+def test_speaker_audio_selects_only_requested_track_and_validates_source(client, ctx, monkeypatch):
+    mid = make_meeting(ctx)
+    folder = paths.data_dir() / "meetings" / mid
+    folder.mkdir(parents=True)
+    (folder / "mic.opus").write_bytes(b"mic")
+    (folder / "pc.raw").write_bytes(b"pc")
+    commands = []
+
+    def stream(cmd):
+        commands.append(cmd)
+        return iter([b"OggS-audio"])
+
+    monkeypatch.setattr(api, "_stream_ffmpeg", stream)
+    response = client.get(f"/api/meetings/{mid}/audio", params={"start": 31, "end": 41, "source": "pc"})
+    assert response.status_code == 200
+    cmd, = commands
+    assert str(folder / "pc.raw") in cmd and str(folder / "mic.opus") not in cmd
+    assert "-filter_complex" not in cmd
+    assert cmd[cmd.index("-ss") + 1] == "31.000"
+    assert cmd[cmd.index("-t") + 1] == "10.000"
+    assert client.get(f"/api/meetings/{mid}/audio", params={"source": "../other"}).status_code == 422
+    (folder / "pc.raw").unlink()
+    # Não usar o microfone no lugar de uma fala que está na trilha do PC.
+    assert client.get(f"/api/meetings/{mid}/audio", params={"source": "pc"}).status_code == 404
+    assert len(commands) == 1
+
+
 # -- WebSocket ----------------------------------------------------------------------------
 
 

@@ -40,6 +40,7 @@ def settings(store):
 
 
 def test_defaults_match_production():
+    assert DEFAULTS["dictation_evaluation_enabled"] is False
     assert DEFAULTS["key"] == "ctrl+super"
     assert DEFAULTS["paste"] == "shift+insert"
     assert DEFAULTS["ignore_devices"] == ["ydotoold"]
@@ -113,6 +114,7 @@ def test_settings_validation_rejects_bad_key(settings, store):
         ({"max_sec": 0}, "maior que zero"),
         ({"min_sec": 10, "max_sec": 5}, "menor que a máxima"),
         ({"trailing_space": "sim"}, "verdadeiro ou falso"),
+        ({"dictation_evaluation_enabled": "sim"}, "verdadeiro ou falso"),
         ({"ignore_devices": "ydotoold"}, "lista"),
         ({"inexistente": 1}, "desconhecida"),
         ({"model": ""}, "não pode ser vazio"),

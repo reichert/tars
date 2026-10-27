@@ -95,6 +95,46 @@ describe("TasksTab", () => {
     expect(w.text()).toContain("Levantando tarefas…");
   });
 
+  it("cancela o levantamento em andamento e mantém tarefas e contexto", async () => {
+    let finish!: (value: unknown) => void;
+    const cancelTasksScan = vi.fn(() => new Promise((resolve) => { finish = resolve; }));
+    const { w, listTasks, emit } = await mountTab(payload([task()]), { cancelTasksScan });
+    const context = w.get(".scan-context textarea");
+    await context.setValue("Foque no checkout.");
+    listTasks.mockResolvedValue(payload([task()], { scan: { state: "running", error: null, updated_at: "x" } }));
+    emit({ type: "meeting_job", meeting_id: "m1", kind: "tasks", state: "running" });
+    await flushPromises();
+    expect(context.attributes("disabled")).toBeDefined();
+    await btn(w, "Cancelar levantamento").trigger("click");
+    expect(cancelTasksScan).toHaveBeenCalledWith("m1");
+    expect(btn(w, "Cancelando…").attributes("disabled")).toBeDefined();
+    expect(w.text()).toContain("Cancelando levantamento…");
+    await btn(w, "Cancelando…").trigger("click");
+    expect(cancelTasksScan).toHaveBeenCalledTimes(1);
+    const scan = { state: "cancelled" as const, error: null, updated_at: "y" };
+    listTasks.mockResolvedValue(payload([task()], { scan }));
+    finish({ scan });
+    await flushPromises();
+    expect(w.text()).toContain("Levantamento cancelado.");
+    expect(w.text()).toContain(task().title);
+    expect(w.find(".scan-status").exists()).toBe(false);
+    expect(btn(w, "Refazer sugestões").attributes("disabled")).toBeUndefined();
+    expect(context.attributes("disabled")).toBeUndefined();
+    expect((context.element as HTMLTextAreaElement).value).toBe("Foque no checkout.");
+  });
+
+  it("mantém o levantamento e permite tentar cancelar novamente após falha", async () => {
+    const cancelTasksScan = vi.fn().mockRejectedValue(new Error("Não foi possível cancelar"));
+    const { w } = await mountTab(payload([], {
+      scan: { state: "running", error: null, updated_at: "x" },
+    }), { cancelTasksScan });
+    await btn(w, "Cancelar levantamento").trigger("click");
+    await flushPromises();
+    expect(w.text()).toContain("Não foi possível cancelar");
+    expect(btn(w, "Cancelar levantamento").attributes("disabled")).toBeUndefined();
+    expect(w.text()).toContain("Levantando tarefas…");
+  });
+
   it("mostra 'Nenhuma tarefa identificada nesta reunião' com scan done e sem itens visíveis", async () => {
     const { w } = await mountTab(payload([]));
     expect(w.text()).toContain("Nenhuma tarefa identificada nesta reunião");
@@ -136,6 +176,26 @@ describe("TasksTab", () => {
     await field(w, "Título").setValue("Emitir NFSe por lote");
     await flushPromises();
     expect(updateTask).toHaveBeenCalledWith("t1", { title: "Emitir NFSe por lote" });
+  });
+
+  it("refaz com o contexto informado e preserva o texto se o pedido falhar", async () => {
+    const scanTasks = vi.fn().mockRejectedValueOnce(new Error("Serviço indisponível"))
+      .mockResolvedValueOnce({ state: "running" });
+    const { w, listTasks } = await mountTab(payload([task()]), { scanTasks });
+    const context = w.get(".scan-context textarea");
+    const contextId = context.attributes("id");
+    expect(w.get(`label[for="${contextId}"]`).text()).toContain("orientar as sugestões");
+    await context.setValue("  Foque no checkout.\nAgrupe pagamentos.  ");
+    await btn(w, "Refazer sugestões").trigger("click");
+    await flushPromises();
+    expect(scanTasks).toHaveBeenCalledWith("m1", "Foque no checkout.\nAgrupe pagamentos.");
+    expect(w.text()).toContain("Serviço indisponível");
+    expect((context.element as HTMLTextAreaElement).value).toBe("  Foque no checkout.\nAgrupe pagamentos.  ");
+    listTasks.mockResolvedValue(payload([task()], { scan: { state: "running", error: null, updated_at: "x" } }));
+    await btn(w, "Refazer sugestões").trigger("click");
+    await flushPromises();
+    expect(scanTasks).toHaveBeenCalledTimes(2);
+    expect(context.attributes("disabled")).toBeDefined();
   });
 
   it("seletor de responsável lista as pessoas e marca a sugestão do Claude com '(sugestão)'", async () => {

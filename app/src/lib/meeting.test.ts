@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { MeetingDetail } from "../api/types";
-import { alertLines, exportFileName, formatDuration, transcriptText } from "./meeting";
+import type { MeetingDetail, Segment } from "../api/types";
+import { alertLines, exportFileName, formatDuration, speakerSamples, transcriptText } from "./meeting";
 
 const speakers = [
   { id: "s1", label: "Você", voice_id: null, is_me: true, color_index: 0 },
@@ -8,6 +8,21 @@ const speakers = [
 ];
 
 describe("meeting helpers", () => {
+  it("escolhe até três trechos da pessoa, prioriza falas longas e limita cada um a dez segundos", () => {
+    const segment = (id: number, start: number, end: number, speaker = "s2"): Segment => ({
+      id, start_s: start, end_s: end, speaker_id: speaker, source: "pc", text: "fala", dictated: false,
+    });
+    const segments = [
+      segment(1, 0, 30, "s1"), segment(2, 20, 20.3), segment(3, 30, 50),
+      segment(4, 32, 42), segment(5, 60, 67), segment(6, 80, 86),
+      segment(7, -1, 10), segment(8, 10, 10), segment(9, 12, NaN),
+    ];
+    const samples = speakerSamples(segments, "s2");
+    expect(samples.map((s) => [s.id, s.start_s, s.end_s])).toEqual([[3, 30, 40], [5, 60, 67], [6, 80, 86]]);
+    expect(segments[2].end_s).toBe(50); // os tempos originais são preservados
+    expect(speakerSamples(segments, "ausente")).toEqual([]);
+  });
+
   it("transcriptText follows the backend format", () => {
     const text = transcriptText(
       [
