@@ -1,5 +1,6 @@
-"""Colagem no cliente ativo: clipboard (wl-copy) + atalho de colar simulado pelo ydotool."""
+"""Colagem no cliente ativo: clipboard (wl-copy ou xclip) + atalho de colar simulado pelo ydotool."""
 
+import os
 import subprocess
 import time
 
@@ -13,10 +14,18 @@ PASTE_KEYS = {
 }
 
 
+def copy_commands(primary: bool) -> list[list[str]]:
+    """Comandos de cópia da sessão atual: wl-copy no Wayland, xclip no X11."""
+    if os.environ.get("WAYLAND_DISPLAY"):
+        commands = [["wl-copy"], ["wl-copy", "--primary"]]
+    else:
+        commands = [["xclip", "-selection", "clipboard"], ["xclip", "-selection", "primary"]]
+    return commands if primary else commands[:1]
+
+
 def paste(text: str, mode: str, ydotool: str) -> None:
     data = text.encode()
-    subprocess.run(["wl-copy"], input=data, check=True, timeout=5)
-    if mode == "shift+insert":
-        subprocess.run(["wl-copy", "--primary"], input=data, check=True, timeout=5)
+    for command in copy_commands(primary=mode == "shift+insert"):
+        subprocess.run(command, input=data, check=True, timeout=5)
     time.sleep(0.05)  # dá tempo do compositor registrar o novo dono do clipboard
     subprocess.run([ydotool, "key", *PASTE_KEYS[mode]], check=True, timeout=5)

@@ -9,7 +9,7 @@ transcrito pelo Whisper (faster-whisper `large-v3-turbo`, na GPU) é colado onde
 está o cursor.
 
 Feito para GNOME no Wayland: o teclado é lido via evdev (o usuário precisa estar no
-grupo `input`) e a colagem usa `wl-copy` + `ydotool` (serviço `ydotool.service`).
+grupo `input`) e a colagem usa `wl-copy` (Wayland) ou `xclip` (X11) + `ydotool` (serviço `ydotool.service`).
 
 ## Estado do projeto
 
@@ -35,7 +35,7 @@ Em Ubuntu 24.04, instale as ferramentas de áudio, teclado e compilação:
 
 ```bash
 sudo apt update
-sudo apt install build-essential python3-dev pkg-config ffmpeg pipewire-bin wl-clipboard ydotool libnotify-bin espeak-ng \
+sudo apt install build-essential python3-dev pkg-config ffmpeg pipewire-bin wl-clipboard xclip ydotool libnotify-bin espeak-ng \
   libwebkit2gtk-4.1-dev libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev
 ```
 
