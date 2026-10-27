@@ -3,7 +3,7 @@
 import logging
 import os
 import shutil
-import stat
+import socket
 import subprocess
 import time
 from collections.abc import Callable, Mapping
@@ -29,17 +29,21 @@ class ClipboardCommands(NamedTuple):
     primary: list[str]
 
 
-def _is_socket(path: str) -> bool:
+def _socket_alive(path: str) -> bool:
+    """Conecta no socket: um `wayland-0` que sobrou de sessão anterior recusa a conexão."""
     try:
-        return stat.S_ISSOCK(os.stat(path).st_mode)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
+            sock.settimeout(0.5)
+            sock.connect(path)
+        return True
     except OSError:
         return False
 
 
-def _default_wayland_socket(env: Mapping[str, str], is_socket: Callable[[str], bool]) -> bool:
+def _default_wayland_socket(env: Mapping[str, str], socket_alive: Callable[[str], bool]) -> bool:
     """Socket padrão do compositor, usado pelo wl-copy quando WAYLAND_DISPLAY está vazio."""
     runtime_dir = env.get("XDG_RUNTIME_DIR")
-    return bool(runtime_dir) and is_socket(os.path.join(runtime_dir, "wayland-0"))
+    return bool(runtime_dir) and socket_alive(os.path.join(runtime_dir, "wayland-0"))
 
 
 def _wayland(which: Callable[[str], str | None]) -> ClipboardCommands:
@@ -51,7 +55,7 @@ def _wayland(which: Callable[[str], str | None]) -> ClipboardCommands:
 def clipboard_commands(
     env: Mapping[str, str] = os.environ,
     which: Callable[[str], str | None] = shutil.which,
-    is_socket: Callable[[str], bool] = _is_socket,
+    socket_alive: Callable[[str], bool] = _socket_alive,
 ) -> ClipboardCommands:
     """Escolhe os comandos de cópia da sessão gráfica atual.
 
@@ -59,7 +63,7 @@ def clipboard_commands(
     socket `wayland-0` (serviço que subiu antes de o GNOME exportar WAYLAND_DISPLAY) e por
     fim DISPLAY, com xclip ou xsel.
     """
-    if env.get("WAYLAND_DISPLAY") or _default_wayland_socket(env, is_socket):
+    if env.get("WAYLAND_DISPLAY") or _default_wayland_socket(env, socket_alive):
         return _wayland(which)
     if env.get("DISPLAY"):
         if which("xclip"):
@@ -87,6 +91,8 @@ def log_clipboard_session(log: logging.Logger) -> None:
 
 
 def paste(text: str, mode: str, ydotool: str) -> None:
+    # Não capture stdout/stderr da cópia: xclip e xsel ficam em segundo plano segurando a
+    # seleção, e um pipe aberto por eles faria o run esperar até o timeout.
     data = text.encode()
     cmds = clipboard_commands()
     subprocess.run(cmds.clipboard, input=data, check=True, timeout=5)

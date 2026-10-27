@@ -1,4 +1,5 @@
 import logging
+import socket
 
 import pytest
 
@@ -14,7 +15,7 @@ def which_of(*installed):
     return lambda name: f"/usr/bin/{name}" if name in installed else None
 
 
-def no_socket(_path):
+def no_wayland(_path):
     return False
 
 
@@ -22,18 +23,18 @@ ALL_TOOLS = which_of("wl-copy", "xclip", "xsel")
 
 
 def test_wayland_uses_wl_copy():
-    cmds = clipboard_commands({"WAYLAND_DISPLAY": "wayland-0"}, ALL_TOOLS, no_socket)
+    cmds = clipboard_commands({"WAYLAND_DISPLAY": "wayland-0"}, ALL_TOOLS, no_wayland)
     assert cmds == ("wayland", ["wl-copy"], ["wl-copy", "--primary"])
 
 
 def test_wayland_wins_over_xwayland_display():
     env = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0"}
-    assert clipboard_commands(env, ALL_TOOLS, no_socket).session == "wayland"
+    assert clipboard_commands(env, ALL_TOOLS, no_wayland).session == "wayland"
 
 
 def test_wayland_without_wl_copy_explains_package():
     with pytest.raises(ClipboardUnavailable, match="wl-clipboard"):
-        clipboard_commands({"WAYLAND_DISPLAY": "wayland-0"}, which_of("xclip"), no_socket)
+        clipboard_commands({"WAYLAND_DISPLAY": "wayland-0"}, which_of("xclip"), no_wayland)
 
 
 def test_default_wayland_socket_covers_service_started_too_early():
@@ -44,7 +45,7 @@ def test_default_wayland_socket_covers_service_started_too_early():
 
 
 def test_x11_uses_xclip():
-    cmds = clipboard_commands({"DISPLAY": ":0"}, ALL_TOOLS, no_socket)
+    cmds = clipboard_commands({"DISPLAY": ":0"}, ALL_TOOLS, no_wayland)
     assert cmds == (
         "x11",
         ["xclip", "-selection", "clipboard"],
@@ -53,7 +54,7 @@ def test_x11_uses_xclip():
 
 
 def test_x11_falls_back_to_xsel():
-    cmds = clipboard_commands({"DISPLAY": ":0"}, which_of("xsel"), no_socket)
+    cmds = clipboard_commands({"DISPLAY": ":0"}, which_of("xsel"), no_wayland)
     assert cmds == (
         "x11",
         ["xsel", "--clipboard", "--input"],
@@ -63,12 +64,12 @@ def test_x11_falls_back_to_xsel():
 
 def test_x11_without_tools_explains_package():
     with pytest.raises(ClipboardUnavailable, match="instale o pacote xclip"):
-        clipboard_commands({"DISPLAY": ":0"}, which_of("wl-copy"), no_socket)
+        clipboard_commands({"DISPLAY": ":0"}, which_of("wl-copy"), no_wayland)
 
 
 def test_no_graphical_session_explains_import_environment():
     with pytest.raises(ClipboardUnavailable, match="import-environment"):
-        clipboard_commands({"XDG_RUNTIME_DIR": "/run/user/1000"}, ALL_TOOLS, no_socket)
+        clipboard_commands({"XDG_RUNTIME_DIR": "/run/user/1000"}, ALL_TOOLS, no_wayland)
 
 
 def test_log_clipboard_session(monkeypatch, caplog):
@@ -127,3 +128,28 @@ def test_paste_without_clipboard_does_not_send_keys(monkeypatch, calls):
     with pytest.raises(ClipboardUnavailable):
         paste_module.paste("oi", "ctrl+v", "ydotool")
     assert calls == []
+
+
+def test_paste_x11_shift_insert_end_to_end(monkeypatch):
+    recorded = []
+    monkeypatch.setattr(paste_module.subprocess, "run", lambda cmd, **kwargs: recorded.append(cmd))
+    monkeypatch.setattr(paste_module.time, "sleep", lambda _: None)
+    monkeypatch.setattr(paste_module, "clipboard_commands",
+                        lambda: clipboard_commands({"DISPLAY": ":0"}, which_of("xclip"), no_wayland))
+    paste_module.paste("olá", "shift+insert", "ydotool")
+    assert recorded == [
+        ["xclip", "-selection", "clipboard"],
+        ["xclip", "-selection", "primary"],
+        ["ydotool", "key", *paste_module.PASTE_KEYS["shift+insert"]],
+    ]
+
+
+def test_socket_alive_rejects_stale_socket(tmp_path):
+    path = str(tmp_path / "wayland-0")
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(path)
+    server.listen()
+    assert paste_module._socket_alive(path)
+    server.close()  # o arquivo do socket continua lá, mas ninguém escuta
+    assert not paste_module._socket_alive(path)
+    assert not paste_module._socket_alive(str(tmp_path / "inexistente"))
